@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import time
 import typing as t
 from functools import lru_cache
+from hashlib import md5
 
 import facebook_business.adobjects.user as fb_user
 import pendulum
@@ -13,13 +15,14 @@ from facebook_business.adobjects.adreportrun import AdReportRun
 from facebook_business.adobjects.adsactionstats import AdsActionStats
 from facebook_business.adobjects.adshistogramstats import AdsHistogramStats
 from facebook_business.adobjects.adsinsights import AdsInsights
-from facebook_business.api import FacebookAdsApi
+from facebook_business.api import FacebookAdsApi, FacebookRequest
 from singer_sdk import typing as th
 from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Stream
 
 EXCLUDED_FIELDS = [
     "total_postbacks",
     "adset_end",
+    "age_targeting",
     "adset_start",
     "conversion_lead_rate",
     "cost_per_conversion_lead",
@@ -29,6 +32,11 @@ EXCLUDED_FIELDS = [
     "creative_media_type",
     "dda_countby_convs",
     "dda_results",
+    "estimated_ad_recall_rate_lower_bound",
+    "estimated_ad_recall_rate_upper_bound",
+    "estimated_ad_recallers_lower_bound",
+    "estimated_ad_recallers_upper_bound",
+    "gender_targeting",
     "instagram_upcoming_event_reminders_set",
     "interactive_component_tap",
     "marketing_messages_cost_per_delivered",
@@ -47,9 +55,17 @@ EXCLUDED_FIELDS = [
     "__dict__",
 ]
 
-SLEEP_TIME_INCREMENT = 5
+POLL_JOB_SLEEP_TIME = 10
+AD_REPORT_RETRY_TIME = 5 * 60
+AD_REPORT_INCREMENT_SLEEP_TIME = 30
 INSIGHTS_MAX_WAIT_TO_START_SECONDS = 5 * 60
-INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS = 30 * 60
+INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS = 10 * 60
+JOB_STALE_ERROR_MESSAGE = (
+    "This is an intermittent error and may resolve itself on "
+    "subsequent queries to the Facebook API. "
+    "You should deselect fields from the schema that are not necessary, "
+    "as that may help improve the reliability of the Facebook API."
+)
 
 
 class AdsInsightStream(Stream):
@@ -60,12 +76,11 @@ class AdsInsightStream(Stream):
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         """Initialize the stream."""
         self._report_definition = kwargs.pop("report_definition")
-        kwargs["name"] = f"{self.name}_{self._report_definition['name']}"
         super().__init__(*args, **kwargs)
 
     @property
     def primary_keys(self) -> list[str] | None:
-        return ["date_start", "account_id", "ad_id"] + self._report_definition["breakdowns"]
+        return ["id"]
 
     @primary_keys.setter
     def primary_keys(self, new_value: list[str] | None) -> None:
@@ -91,9 +106,9 @@ class AdsInsightStream(Stream):
                 return th.ArrayType(th.ObjectType(*sub_props))
             if "AdsHistogramStats" in d_type:
                 sub_props = []
-                for f in list(AdsHistogramStats.Field.__dict__):
-                    if f not in EXCLUDED_FIELDS:
-                        clean_field = f.replace("field_", "")
+                for field in list(AdsHistogramStats.Field.__dict__):
+                    if field not in EXCLUDED_FIELDS:
+                        clean_field = field.replace("field_", "")
                         if AdsHistogramStats._field_types[clean_field] == "string":  # noqa: SLF001
                             sub_props.append(th.Property(clean_field, th.StringType()))
                         else:
@@ -112,6 +127,7 @@ class AdsInsightStream(Stream):
     @lru_cache  # noqa: B019
     def schema(self) -> dict:
         properties: th.List[th.Property] = []
+        properties.append(th.Property("id", th.StringType()))
         columns = list(AdsInsights.Field.__dict__)[1:]
         for field in columns:
             if field in EXCLUDED_FIELDS:
@@ -122,12 +138,12 @@ class AdsInsightStream(Stream):
         return th.PropertiesList(*properties).to_dict()
 
     def _initialize_client(self) -> None:
-        FacebookAdsApi.init(
+        self.facebook_api = FacebookAdsApi.init(
             access_token=self.config["access_token"],
             timeout=300,
             api_version=self.config["api_version"],
         )
-        fb_user.User(fbid="me")
+        self.facebook_id = fb_user.User(fbid="me")
 
         account_id = self.config["account_id"]
         self.account = AdAccount(f"act_{account_id}").api_get()
@@ -135,68 +151,97 @@ class AdsInsightStream(Stream):
             msg = f"Couldn't find account with id {account_id}"
             raise RuntimeError(msg)
 
-    def _run_job_to_completion(self, params: dict) -> th.Any:
-        job = self.account.get_insights(
-            params=params,
-            is_async=True,
+    def _check_facebook_api_usage(self, headers: str, account_id: str) -> None:
+        total_time_to_regain_access = json.loads(headers.get("x-business-use-case-usage"))[account_id][0].get(
+            "estimated_time_to_regain_access"
         )
+
+        self.logger.info(
+            "Total time to regain access is %s seconds.",
+            total_time_to_regain_access,
+        )
+
+        if total_time_to_regain_access > 0:
+            self.logger.info(
+                " ZZzzzzzzZZz - Sleeping for %s seconds until API limit is cleared.",
+                total_time_to_regain_access,
+            )
+            time.sleep(total_time_to_regain_access)
+
+    def _trigger_async_insight_report_creation(self, account_id: str, params: dict) -> th.Any:
+
+        request = FacebookRequest(
+            node_id=f"act_{account_id}",
+            method="POST",
+            endpoint="/insights",
+            api_type="EDGE",
+            include_summary=False,
+            api=FacebookAdsApi.get_default_api(),
+        )
+
+        request.add_params(params)
+
+        return request.execute()
+
+    def _run_job_to_completion(self, report_instance: AdReportRun, report_date: str) -> th.Any:
         status = None
         time_start = time.time()
+
         while status != "Job Completed":
             duration = time.time() - time_start
-            job = job.api_get()
+            job = report_instance.api_get()
             status = job[AdReportRun.Field.async_status]
             percent_complete = job[AdReportRun.Field.async_percent_completion]
 
             job_id = job["id"]
             self.logger.info(
-                "%s for %s - %s. %s%% done. ",
+                "ID: %s - %s for %s - %s%% done. ",
+                job_id,
                 status,
-                params["time_range"]["since"],
-                params["time_range"]["until"],
+                report_date,
                 percent_complete,
             )
 
             if status == "Job Completed":
                 return job
             if status == "Job Failed":
-                raise RuntimeError(dict(job))
+                self.logger.info(
+                    "Insights job %s failed, trying again in a minute." + JOB_STALE_ERROR_MESSAGE,
+                    job_id,
+                )
+                return
             if duration > INSIGHTS_MAX_WAIT_TO_START_SECONDS and percent_complete == 0:
-                error_message = (
-                    f"Insights job {job_id} did not start after "
-                    f"{INSIGHTS_MAX_WAIT_TO_START_SECONDS} seconds. "
-                    "This is an intermittent error and may resolve itself on subsequent "
-                    "queries to the Facebook API. "
-                    "You should deselect fields from the schema that are not necessary, "
-                    "as that may help improve the reliability of the Facebook API."
+                self.logger.info(
+                    "Insights job %s did not start after %s seconds." + JOB_STALE_ERROR_MESSAGE,
+                    job_id,
+                    duration,
                 )
-                raise RuntimeError(error_message)
-
+                return
             if duration > INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS:
-                error_message = (
-                    f"Insights job {job_id} did not complete after "
-                    f"{INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS // 60} seconds. "
-                    "This is an intermittent error and may resolve itself on "
-                    "subsequent queries to the Facebook API. "
-                    "You should deselect fields from the schema that are not necessary, "
-                    "as that may help improve the reliability of the Facebook API."
+                self.logger.info(
+                    "Insights job %s did not complete after %s seconds",
+                    job_id,
+                    INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS,
                 )
-                raise RuntimeError(error_message)
+                return
 
             self.logger.info(
                 "Sleeping for %s seconds until job is done",
-                SLEEP_TIME_INCREMENT,
+                POLL_JOB_SLEEP_TIME,
             )
-            time.sleep(SLEEP_TIME_INCREMENT)
+            time.sleep(POLL_JOB_SLEEP_TIME)
         msg = "Job failed to complete for unknown reason"
         raise RuntimeError(msg)
 
     def _get_selected_columns(self) -> list[str]:
-        columns = [
-            keys[1] for keys, data in self.metadata.items() if data.selected and len(keys) > 0
-        ]
-        if not columns and self.name == "adsinsights_default":
+        columns = [keys[1] for keys, data in self.metadata.items() if data.selected and len(keys) > 0]
+        if not columns:
             columns = list(self.schema["properties"])
+
+        # pop ID, since it's auto-generated
+        if "id" in columns:
+            columns.remove("id")
+
         return columns
 
     def _get_start_date(
@@ -214,7 +259,7 @@ class AdsInsightStream(Stream):
         # Don't use lookback if this is the first sync. Just start where the user requested.
         if config_start_date >= incremental_start_date:
             report_start = config_start_date
-            self.logger.info("Using configured start_date as report start filter.")
+            self.logger.info("Using configured start_date as report start filter %s.", report_start)
         else:
             self.logger.info(
                 "Incremental sync, applying lookback '%s' to the "
@@ -235,12 +280,27 @@ class AdsInsightStream(Stream):
         if report_start < oldest_allowed_start_date:
             report_start = oldest_allowed_start_date
             self.logger.info(
-                "Report start date '%s' is older than 37 months. "
-                "Using oldest allowed start date '%s' instead.",
+                "Report start date '%s' is older than 37 months. " "Using oldest allowed start date '%s' instead.",
                 report_start,
                 oldest_allowed_start_date,
             )
         return report_start
+
+    def _generate_hash_id(self, adinsight: AdsInsights):
+        # Extract the relevant properties from the AdsInsights object
+        date_start = adinsight.get("date_start", "")
+        campaign_id = adinsight.get("campaign_id", "")
+        adset_id = adinsight.get("adset_id", "")
+        ad_id = adinsight.get("ad_id", "")
+
+        # Concatenate the properties into a string
+        properties_string = f"{date_start}-{campaign_id}-{adset_id}-{ad_id}"
+
+        # Create an MD5 hash from the concatenated string
+        hash_object = md5(properties_string.encode())
+
+        # Return the hexadecimal representation of the hash
+        return hash_object.hexdigest()
 
     def get_records(
         self,
@@ -254,11 +314,10 @@ class AdsInsightStream(Stream):
             self.config.get("end_date", pendulum.today().to_date_string()),
         ).date()
 
-        report_start = self._get_start_date(context)
-        report_end = report_start.add(days=time_increment)
-
+        report_date = self._get_start_date(context)
         columns = self._get_selected_columns()
-        while report_start <= sync_end_date:
+
+        while report_date <= sync_end_date:
             params = {
                 "level": self._report_definition["level"],
                 "action_breakdowns": self._report_definition["action_breakdowns"],
@@ -272,13 +331,36 @@ class AdsInsightStream(Stream):
                     self._report_definition["action_attribution_windows_click"],
                 ],
                 "time_range": {
-                    "since": report_start.to_date_string(),
-                    "until": report_end.to_date_string(),
+                    "since": report_date.to_date_string(),
+                    "until": report_date.to_date_string(),
                 },
             }
-            job = self._run_job_to_completion(params)
+
+            response = self._trigger_async_insight_report_creation(params=params, account_id=self.config["account_id"])
+            if response._http_status != 200:
+                self._check_facebook_api_usage(headers=response._headers, account_id=self.config["account_id"])
+                continue
+
+            report_run_id = response.json()["report_run_id"]
+            job = self._run_job_to_completion(
+                report_instance=AdReportRun(report_run_id),
+                report_date=report_date.to_date_string(),
+            )
+
+            if not isinstance(job, AdReportRun):
+                # retry if facebook job report generation got stuck
+                time.sleep(AD_REPORT_RETRY_TIME)
+                continue
+
             for obj in job.get_result():
-                yield obj.export_all_data()
-            # Bump to the next increment
-            report_start = report_start.add(days=time_increment)
-            report_end = report_end.add(days=time_increment)
+                if isinstance(obj, AdsInsights):
+                    obj["id"] = self._generate_hash_id(adinsight=obj)
+                    yield obj.export_all_data()
+                else:
+                    # stop the for loop and retry the same date after a while
+                    time.sleep(AD_REPORT_RETRY_TIME)
+                    break
+            else:
+                # bump to the next increment
+                time.sleep(AD_REPORT_INCREMENT_SLEEP_TIME)
+                report_date = report_date.add(days=time_increment)
