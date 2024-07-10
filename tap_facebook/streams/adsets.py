@@ -285,10 +285,10 @@ class AdsetsStream(IncrementalFacebookStream):
                     ObjectType(
                         Property("cities", ArrayType(ObjectType())),
                         Property("country_groups", ArrayType(StringType)),
-                        Property("custom_locations", ArrayType(StringType)),
+                        Property("custom_locations", ArrayType(ObjectType())),
                         Property("electoral_district", ArrayType(StringType)),
                         Property("geo_markets", ArrayType(ObjectType())),
-                        Property("places", ArrayType(StringType)),
+                        Property("places", ArrayType(ObjectType())),
                         Property("regions", ArrayType(ObjectType())),
                         Property("zips", ArrayType(ObjectType())),
                     ),
