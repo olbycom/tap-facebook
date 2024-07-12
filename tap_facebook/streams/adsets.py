@@ -294,8 +294,8 @@ class AdsetsStream(IncrementalFacebookStream):
                             "geo_markets",
                             ArrayType(
                                 ObjectType(
-                                    ObjectType(Property("key", StringType)),
-                                    ObjectType(Property("name", StringType)),
+                                    Property("key", StringType),
+                                    Property("name", StringType),
                                 )
                             ),
                         ),
@@ -362,8 +362,8 @@ class AdsetsStream(IncrementalFacebookStream):
                             "geo_markets",
                             ArrayType(
                                 ObjectType(
-                                    ObjectType(Property("key", StringType)),
-                                    ObjectType(Property("name", StringType)),
+                                    Property("key", StringType),
+                                    Property("name", StringType),
                                 )
                             ),
                         ),
