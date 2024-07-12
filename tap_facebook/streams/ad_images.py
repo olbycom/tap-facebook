@@ -48,7 +48,7 @@ class AdImages(FacebookStream):
 
     name = "adimages"
     path = f"/adimages?fields={columns}"
-    tap_stream_id = "images"
+    tap_stream_id = "adimages"
     replication_method = REPLICATION_INCREMENTAL
     replication_key = "id"
 
