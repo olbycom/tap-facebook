@@ -321,7 +321,103 @@ class AdsetsStream(IncrementalFacebookStream):
                 Property("excluded_publisher_categories", ArrayType(StringType)),
                 Property("excluded_publisher_list_ids", ArrayType(StringType)),
                 Property("excluded_user_device", ArrayType(StringType)),
-                Property("exclusions", ArrayType(ObjectType())),
+                Property(
+                    "exclusions",
+                    ObjectType(
+                        Property(
+                            "work_employers",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "work_positions",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "income",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "industries",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "interests",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "life_events",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "education_majors",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "education_schools",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property("education_statuses", ArrayType(IntegerType)),
+                        Property(
+                            "family_statuses",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                        Property("college_years", ArrayType(IntegerType)),
+                        Property(
+                            "behaviors",
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType),
+                                    Property("name", StringType),
+                                )
+                            ),
+                        ),
+                    ),
+                ),
                 Property(
                     "family_statuses",
                     ArrayType(
@@ -331,7 +427,7 @@ class AdsetsStream(IncrementalFacebookStream):
                         )
                     ),
                 ),
-                Property("flexible_spec", ArrayType(ObjectType())),
+                # Property("flexible_spec", ArrayType(ObjectType())), # not enough documentation or examples
                 Property("friends_of_connections", ArrayType(ObjectType())),
                 Property(
                     "geo_locations",
