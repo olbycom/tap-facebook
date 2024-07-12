@@ -90,10 +90,10 @@ class CreativeStream(FacebookStream):
         Property("account_id", StringType),
         Property("actor_id", StringType),
         Property("applink_treatment", StringType),
-        Property(
-            "asset_feed_spec",
-            ObjectType(),
-        ),
+        # Property(
+        #     "asset_feed_spec",
+        #     ObjectType(),
+        # ) # TODO: Implement this
         Property("authorization_category", StringType),
         Property("body", StringType),
         Property("branded_content_sponsor_page_id", StringType),
@@ -101,7 +101,7 @@ class CreativeStream(FacebookStream):
         Property("call_to_action_type", StringType),
         Property("categorization_criteria", StringType),
         Property("category_media_source", StringType),
-        Property("degrees_of_freedom_spec", ObjectType()),
+        # Property("degrees_of_freedom_spec", ObjectType()),  # TODO: Implement this
         Property("destination_set_id", StringType),
         Property("dynamic_ad_voice", StringType),
         Property("effective_authorization_category", StringType),
@@ -121,7 +121,7 @@ class CreativeStream(FacebookStream):
         Property("object_id", StringType),
         Property("object_store_url", StringType),
         Property("object_story_id", StringType),
-        Property("object_story_spec", ObjectType()),
+        # Property("object_story_spec", ObjectType()), # TODO: Implement this
         Property("object_type", StringType),
         Property("object_url", StringType),
         Property("page_link", StringType),

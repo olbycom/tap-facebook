@@ -91,7 +91,18 @@ class AdVideos(FacebookStream):
         Property("embed_html", StringType),
         Property("embeddable", BooleanType),
         Property("event", StringType),
-        Property("format", ArrayType(ObjectType())),
+        Property(
+            "format",
+            ArrayType(
+                ObjectType(
+                    Property("embed_html", StringType),
+                    Property("filter", StringType),
+                    Property("height", IntegerType),
+                    Property("width", IntegerType),
+                    Property("picture", StringType),
+                )
+            ),
+        ),
         Property("from_object", StringType),
         Property("icon", StringType),
         Property("is_crosspost_video", BooleanType),
@@ -106,7 +117,7 @@ class AdVideos(FacebookStream):
         Property("place", StringType),
         Property("post_views", IntegerType),
         Property("premiere_living_room_status", StringType),
-        Property("privacy", ObjectType()),
+        # Property("privacy", ObjectType()) not found in the API docs
         Property("published", BooleanType),
         Property("scheduled_publish_time", DateTimeType),
         Property("source", StringType),

@@ -70,8 +70,20 @@ class CustomAudiences(FacebookStream):
         Property("time_created", IntegerType),
         Property("time_content_updated", StringType),
         Property("customer_file_source", StringType),
-        Property("data_source", ObjectType()),
-        Property("delivery_status", ObjectType()),
+        Property(
+            "data_source",
+            ObjectType(
+                Property("type", StringType),
+                Property("sub_type", StringType),
+            ),
+        ),
+        Property(
+            "delivery_status",
+            ObjectType(
+                Property("code", IntegerType),
+                Property("description", StringType),
+            ),
+        ),
         Property("description", StringType),
         Property(
             "lookalike_spec",
@@ -87,8 +99,14 @@ class CustomAudiences(FacebookStream):
             ),
         ),
         Property("is_value_based", BooleanType),
-        Property("operation_status", ObjectType()),
-        Property("permission_for_actions", ObjectType()),
+        Property(
+            "operation_status",
+            ObjectType(
+                Property("code", IntegerType),
+                Property("description", StringType),
+            ),
+        ),
+        # Property("permission_for_actions", ObjectType()), TODO: Implement this
         Property("pixel_id", StringType),
         Property("retention_days", IntegerType),
         Property("subtype", StringType),
