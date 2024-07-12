@@ -8,6 +8,7 @@ from singer_sdk.typing import (
     BooleanType,
     DateTimeType,
     IntegerType,
+    NumberType,
     ObjectType,
     PropertiesList,
     Property,
@@ -205,19 +206,13 @@ class AdsetsStream(IncrementalFacebookStream):
                 Property(
                     "custom_audiences",
                     ArrayType(
-                        ObjectType(
-                            Property("id", StringType),
-                            Property("name", StringType),
-                        ),
+                        ObjectType(Property("id", StringType)),
                     ),
                 ),
                 Property(
                     "excluded_custom_audiences",
                     ArrayType(
-                        ObjectType(
-                            Property("id", StringType),
-                            Property("name", StringType),
-                        ),
+                        ObjectType(Property("id", StringType)),
                     ),
                 ),
                 Property(
@@ -235,11 +230,35 @@ class AdsetsStream(IncrementalFacebookStream):
                 Property("device_platforms", ArrayType(StringType)),
                 Property("app_install_state", StringType),
                 Property("audience_network_positions", ArrayType(StringType)),
-                Property("behaviors", ArrayType(ObjectType())),
-                Property("college_years", ArrayType(StringType)),
+                Property(
+                    "behaviors",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
+                Property("college_years", ArrayType(IntegerType)),
                 Property("connections", ArrayType(ObjectType())),
-                Property("education_majors", ArrayType(ObjectType())),
-                Property("education_schools", ArrayType(StringType)),
+                Property(
+                    "education_majors",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
+                Property(
+                    "education_schools",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
                 Property("education_statuses", ArrayType(IntegerType)),
                 Property(
                     "effective_audience_network_positions",
@@ -256,55 +275,177 @@ class AdsetsStream(IncrementalFacebookStream):
                         ),
                         Property(
                             "custom_locations",
-                            ArrayType(ObjectType()),
+                            ArrayType(
+                                ObjectType(
+                                    Property("address_string", StringType),
+                                    Property("radius", IntegerType),
+                                    Property("latitude", NumberType),
+                                    Property("longitude", NumberType),
+                                    Property("radius", IntegerType),
+                                    Property("distance_unit", StringType),
+                                )
+                            ),
                         ),
                         Property(
                             "electoral_district",
-                            ArrayType(StringType),
+                            ArrayType(ObjectType(Property("key", StringType))),
                         ),
-                        Property("geo_markets", ArrayType(ObjectType())),
+                        Property(
+                            "geo_markets",
+                            ArrayType(
+                                ObjectType(
+                                    ObjectType(Property("key", StringType)),
+                                    ObjectType(Property("name", StringType)),
+                                )
+                            ),
+                        ),
                         Property(
                             "location_types",
                             ArrayType(StringType),
                         ),
                         Property("places", ArrayType(StringType)),
-                        Property("regions", ArrayType(ObjectType())),
-                        Property("cities", ArrayType(ObjectType())),
-                        Property("zips", ArrayType(ObjectType())),
+                        Property("regions", ArrayType(ObjectType(Property("key", StringType)))),
+                        Property(
+                            "cities",
+                            ArrayType(
+                                ObjectType(
+                                    Property("key", StringType),
+                                    Property("radius", IntegerType),
+                                    Property("distance_unit", StringType),
+                                )
+                            ),
+                        ),
+                        Property("zips", ArrayType(ObjectType(Property("key", StringType)))),
                     ),
                 ),
                 Property("excluded_publisher_categories", ArrayType(StringType)),
                 Property("excluded_publisher_list_ids", ArrayType(StringType)),
                 Property("excluded_user_device", ArrayType(StringType)),
                 Property("exclusions", ArrayType(ObjectType())),
-                Property("family_statuses", ArrayType(ObjectType())),
+                Property(
+                    "family_statuses",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
                 Property("flexible_spec", ArrayType(ObjectType())),
                 Property("friends_of_connections", ArrayType(ObjectType())),
                 Property(
                     "geo_locations",
                     ObjectType(
-                        Property("cities", ArrayType(ObjectType())),
-                        Property("country_groups", ArrayType(StringType)),
-                        Property("custom_locations", ArrayType(ObjectType())),
-                        Property("electoral_district", ArrayType(StringType)),
-                        Property("geo_markets", ArrayType(ObjectType())),
-                        Property("places", ArrayType(ObjectType())),
-                        Property("regions", ArrayType(ObjectType())),
-                        Property("zips", ArrayType(ObjectType())),
+                        Property("countries", ArrayType(StringType)),
+                        Property(
+                            "country_groups",
+                            ArrayType(StringType),
+                        ),
+                        Property(
+                            "custom_locations",
+                            ArrayType(
+                                ObjectType(
+                                    Property("address_string", StringType),
+                                    Property("radius", IntegerType),
+                                    Property("latitude", NumberType),
+                                    Property("longitude", NumberType),
+                                    Property("radius", IntegerType),
+                                    Property("distance_unit", StringType),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "electoral_district",
+                            ArrayType(ObjectType(Property("key", StringType))),
+                        ),
+                        Property(
+                            "geo_markets",
+                            ArrayType(
+                                ObjectType(
+                                    ObjectType(Property("key", StringType)),
+                                    ObjectType(Property("name", StringType)),
+                                )
+                            ),
+                        ),
+                        Property(
+                            "location_types",
+                            ArrayType(StringType),
+                        ),
+                        Property("places", ArrayType(StringType)),
+                        Property("regions", ArrayType(ObjectType(Property("key", StringType)))),
+                        Property(
+                            "cities",
+                            ArrayType(
+                                ObjectType(
+                                    Property("key", StringType),
+                                    Property("radius", IntegerType),
+                                    Property("distance_unit", StringType),
+                                )
+                            ),
+                        ),
+                        Property("zips", ArrayType(ObjectType(Property("key", StringType)))),
                     ),
                 ),
-                Property("income", ArrayType(ObjectType())),
-                Property("industries", ArrayType(ObjectType())),
-                Property("interests", ArrayType(ObjectType())),
-                Property("life_events", ArrayType(ObjectType())),
+                Property(
+                    "income",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
+                Property(
+                    "industries",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
+                Property(
+                    "interests",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
+                Property(
+                    "life_events",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
                 Property("locales", ArrayType(IntegerType)),
-                Property("relationship_statuses", ArrayType(StringType)),
+                Property("relationship_statuses", ArrayType(IntegerType)),
                 Property("user_adclusters", ArrayType(ObjectType())),
                 Property("user_device", ArrayType(StringType)),
                 Property("user_os", ArrayType(StringType)),
                 Property("wireless_carrier", ArrayType(StringType)),
-                Property("work_employers", ArrayType(ObjectType())),
-                Property("work_positions", ArrayType(ObjectType())),
+                Property(
+                    "work_employers",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
+                Property(
+                    "work_positions",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
             ),
         ),
         Property("lifetime_min_spend_target", StringType),
