@@ -30,38 +30,38 @@ class AdsetsStream(IncrementalFacebookStream):
     """
 
     columns = [  # noqa: RUF012
-        "id",
         "account_id",
-        "campaign_id",
-        "updated_time",
-        "created_time",
-        "start_time",
-        "end_time",
-        "name",
-        "effective_status",
-        "daily_budget",
-        "budget_remaining",
-        "lifetime_budget",
-        "configured_status",
-        "promoted_object",
         "attribution_spec",
+        "bid_amount",
+        "bid_info",
+        "bid_strategy",
         "billing_event",
+        "budget_remaining",
         "campaign_attribution",
+        "campaign_id",
+        "configured_status",
+        "created_time",
+        "daily_budget",
         "destination_type",
+        "effective_status",
+        "end_time",
+        "id",
         "is_dynamic_creative",
         "learning_stage_info",
+        "lifetime_budget",
         "lifetime_imps",
         "multi_optimization_goal_weight",
+        "name",
         "optimization_goal",
         "optimization_sub_event",
         "pacing_type",
+        "promoted_object",
         "recurring_budget_semantics",
         "source_adset_id",
+        "start_time",
         "status",
-        "bid_amount",
-        "bid_strategy",
         "targeting",
-        "bid_info",
+        "updated_time",
     ]
 
     columns_remaining = [  # noqa: RUF012
@@ -240,7 +240,7 @@ class AdsetsStream(IncrementalFacebookStream):
                 Property("connections", ArrayType(ObjectType())),
                 Property("education_majors", ArrayType(ObjectType())),
                 Property("education_schools", ArrayType(StringType)),
-                Property("education_statuses", ArrayType(StringType)),
+                Property("education_statuses", ArrayType(IntegerType)),
                 Property(
                     "effective_audience_network_positions",
                     ArrayType(StringType),
@@ -294,8 +294,24 @@ class AdsetsStream(IncrementalFacebookStream):
                     ),
                 ),
                 Property("income", ArrayType(ObjectType())),
-                Property("industries", ArrayType(ObjectType())),
-                Property("interests", ArrayType(StringType)),
+                Property(
+                    "industries",
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                        )
+                    ),
+                ),
+            ),
+            Property(
+                "interests",
+                ArrayType(
+                    ObjectType(
+                        Property("id", StringType),
+                        Property("name", StringType),
+                    )
+                ),
                 Property("life_events", ArrayType(ObjectType())),
                 Property("locales", ArrayType(IntegerType)),
                 Property("relationship_statuses", ArrayType(StringType)),
