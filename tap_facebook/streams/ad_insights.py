@@ -343,6 +343,35 @@ class AdsInsightStream(Stream):
                 response = self._trigger_async_insight_report_creation(
                     params=params, account_id=self.config["account_id"]
                 )
+
+                if response._http_status != 200:
+                    self._check_facebook_api_usage(headers=response._headers, account_id=self.config["account_id"])
+                    continue
+
+                report_run_id = response.json()["report_run_id"]
+                job = self._run_job_to_completion(
+                    report_instance=AdReportRun(report_run_id),
+                    report_date=report_date.to_date_string(),
+                )
+
+                if not isinstance(job, AdReportRun):
+                    # retry if facebook job report generation got stuck
+                    time.sleep(AD_REPORT_RETRY_TIME)
+                    continue
+
+                for obj in job.get_result():
+                    if isinstance(obj, AdsInsights):
+                        obj["id"] = self._generate_hash_id(adinsight=obj)
+                        yield obj.export_all_data()
+                    else:
+                        # stop the for loop and retry the same date after a while
+                        time.sleep(AD_REPORT_RETRY_TIME)
+                        break
+                else:
+                    # bump to the next increment
+                    time.sleep(AD_REPORT_INCREMENT_SLEEP_TIME)
+                    report_date = report_date.add(days=time_increment)
+
             except FacebookRequestError as fb_err:
                 if fb_err.api_error_code == HTTPStatus.BAD_REQUEST and "unsupported get request" in str(
                     fb_err.api_error_message.lower()
@@ -352,31 +381,3 @@ class AdsInsightStream(Stream):
 
                 self.logger.warning(f"An unhandled error occurred: {fb_err}. Stopping execution.")
                 raise FatalAPIError(fb_err)
-
-            if response._http_status != 200:
-                self._check_facebook_api_usage(headers=response._headers, account_id=self.config["account_id"])
-                continue
-
-            report_run_id = response.json()["report_run_id"]
-            job = self._run_job_to_completion(
-                report_instance=AdReportRun(report_run_id),
-                report_date=report_date.to_date_string(),
-            )
-
-            if not isinstance(job, AdReportRun):
-                # retry if facebook job report generation got stuck
-                time.sleep(AD_REPORT_RETRY_TIME)
-                continue
-
-            for obj in job.get_result():
-                if isinstance(obj, AdsInsights):
-                    obj["id"] = self._generate_hash_id(adinsight=obj)
-                    yield obj.export_all_data()
-                else:
-                    # stop the for loop and retry the same date after a while
-                    time.sleep(AD_REPORT_RETRY_TIME)
-                    break
-            else:
-                # bump to the next increment
-                time.sleep(AD_REPORT_INCREMENT_SLEEP_TIME)
-                report_date = report_date.add(days=time_increment)
