@@ -7,6 +7,7 @@ import time
 import typing as t
 from functools import lru_cache
 from hashlib import md5
+from http import HTTPStatus
 
 import facebook_business.adobjects.user as fb_user
 import pendulum
@@ -18,6 +19,7 @@ from facebook_business.adobjects.adsinsights import AdsInsights
 from facebook_business.api import FacebookAdsApi, FacebookRequest
 from facebook_business.exceptions import FacebookRequestError
 from singer_sdk import typing as th
+from singer_sdk.exceptions import FatalAPIError
 from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Stream
 
 EXCLUDED_FIELDS = [
@@ -342,11 +344,14 @@ class AdsInsightStream(Stream):
                     params=params, account_id=self.config["account_id"]
                 )
             except FacebookRequestError as fb_err:
-                self.logger.warning(f"API Error: {fb_err.api_error_message()}. Trying again..")
-                continue
-            except Exception as err:
-                self.logger.warning(f"An unhandled error occurred: {err}. Trying again..")
-                continue
+                if fb_err.api_error_code == HTTPStatus.BAD_REQUEST and "unsupported get request" in str(
+                    fb_err.api_error_message.lower()
+                ):
+                    self.logger.warning(f"API Error: {fb_err.api_error_message()}. Trying again..")
+                    continue
+
+                self.logger.warning(f"An unhandled error occurred: {fb_err}. Stopping execution.")
+                raise FatalAPIError(fb_err)
 
             if response._http_status != 200:
                 self._check_facebook_api_usage(headers=response._headers, account_id=self.config["account_id"])
