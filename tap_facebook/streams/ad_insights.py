@@ -16,6 +16,7 @@ from facebook_business.adobjects.adsactionstats import AdsActionStats
 from facebook_business.adobjects.adshistogramstats import AdsHistogramStats
 from facebook_business.adobjects.adsinsights import AdsInsights
 from facebook_business.api import FacebookAdsApi, FacebookRequest
+from facebook_business.exceptions import FacebookRequestError
 from singer_sdk import typing as th
 from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Stream
 
@@ -336,7 +337,17 @@ class AdsInsightStream(Stream):
                 },
             }
 
-            response = self._trigger_async_insight_report_creation(params=params, account_id=self.config["account_id"])
+            try:
+                response = self._trigger_async_insight_report_creation(
+                    params=params, account_id=self.config["account_id"]
+                )
+            except FacebookRequestError as fb_err:
+                self.logger.warning(f"API Error: {fb_err.api_error_message()}. Trying again..")
+                continue
+            except Exception as err:
+                self.logger.warning(f"An unhandled error occurred: {err}. Trying again..")
+                continue
+
             if response._http_status != 200:
                 self._check_facebook_api_usage(headers=response._headers, account_id=self.config["account_id"])
                 continue
