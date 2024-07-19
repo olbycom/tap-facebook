@@ -22,6 +22,51 @@ from singer_sdk import typing as th
 from singer_sdk.exceptions import FatalAPIError
 from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Stream
 
+DEFAULT_REPORT_FIELDS = [
+    # Account and campaign information
+    "account_id",
+    "account_name",
+    "campaign_id",
+    "campaign_name",
+    "adset_id",
+    "adset_name",
+    "ad_id",
+    "ad_name",
+    # Performance metrics
+    "clicks",
+    "cpc",
+    "cpm",
+    "ctr",
+    "frequency",
+    "impressions",
+    "reach",
+    "spend",
+    # Engagement metrics
+    "engagement_rate_ranking",
+    "inline_link_clicks",
+    "inline_link_clicks_ctr",
+    "inline_post_engagement",
+    "outbound_clicks",
+    "outbound_clicks_ctr",
+    # Conversion metrics
+    "actions",
+    "cost_per_action_type",
+    "conversion_values",
+    "conversions",
+    "cost_per_conversion",
+    "purchase_roas",
+    # Video metrics
+    "video_avg_time_watched_actions",
+    # Quality and ranking
+    "conversion_rate_ranking",
+    "quality_ranking",
+    "estimated_ad_recall_rate",
+    "estimated_ad_recallers",
+    # Time
+    "date_start",
+    "date_stop",
+]
+
 EXCLUDED_FIELDS = [
     "total_postbacks",
     "adset_end",
@@ -105,13 +150,13 @@ class AdsInsightStream(Stream):
                 sub_props = [
                     th.Property(field.replace("field_", ""), th.StringType())
                     for field in list(AdsActionStats.Field.__dict__)
-                    if field not in EXCLUDED_FIELDS
+                    if field in DEFAULT_REPORT_FIELDS
                 ]
                 return th.ArrayType(th.ObjectType(*sub_props))
             if "AdsHistogramStats" in d_type:
                 sub_props = []
                 for field in list(AdsHistogramStats.Field.__dict__):
-                    if field not in EXCLUDED_FIELDS:
+                    if field in DEFAULT_REPORT_FIELDS:
                         clean_field = field.replace("field_", "")
                         if AdsHistogramStats._field_types[clean_field] == "string":  # noqa: SLF001
                             sub_props.append(th.Property(clean_field, th.StringType()))
@@ -134,7 +179,7 @@ class AdsInsightStream(Stream):
         properties.append(th.Property("id", th.StringType()))
         columns = list(AdsInsights.Field.__dict__)[1:]
         for field in columns:
-            if field in EXCLUDED_FIELDS:
+            if field not in DEFAULT_REPORT_FIELDS:
                 continue
             properties.append(th.Property(field, self._get_datatype(field)))
         for breakdown in self._report_definition["breakdowns"]:

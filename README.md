@@ -148,8 +148,7 @@ develop your own taps and targets.
 
 ### Ads Insights fields
 
-account_currency: string
-
+- account_currency: string
 - account_id: string
 - account_name: string
 - action_values: array
