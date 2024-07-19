@@ -22,69 +22,61 @@ from singer_sdk import typing as th
 from singer_sdk.exceptions import FatalAPIError
 from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Stream
 
-DEFAULT_REPORT_FIELDS = [
-    # Account and campaign information
-    "account_id",
-    "account_name",
-    "campaign_id",
-    "campaign_name",
-    "adset_id",
-    "adset_name",
-    "ad_id",
-    "ad_name",
-    # Performance metrics
-    "clicks",
-    "cpc",
-    "cpm",
-    "ctr",
-    "frequency",
-    "impressions",
-    "reach",
-    "spend",
-    # Engagement metrics
-    "engagement_rate_ranking",
-    "inline_link_clicks",
-    "inline_link_clicks_ctr",
-    "inline_post_engagement",
-    "outbound_clicks",
-    "outbound_clicks_ctr",
-    # Conversion metrics
-    "actions",
-    "cost_per_action_type",
-    "conversion_values",
-    "conversions",
-    "cost_per_conversion",
-    "purchase_roas",
-    # Video metrics
-    "video_avg_time_watched_actions",
-    # Quality and ranking
-    "conversion_rate_ranking",
-    "quality_ranking",
-    "estimated_ad_recall_rate",
-    "estimated_ad_recallers",
-    # Time
-    "date_start",
-    "date_stop",
-]
-
 EXCLUDED_FIELDS = [
-    "total_postbacks",
+    "attribution_setting",
+    "action_values",
+    "actions",
+    "ad_click_actions",
+    "ad_impression_actions",
     "adset_end",
-    "age_targeting",
     "adset_start",
-    "conversion_lead_rate",
-    "cost_per_conversion_lead",
+    "age_targeting",
+    "auction_bid",
+    "auction_competitiveness",
+    "auction_max_competitor_bid",
+    "buying_type",
+    "canvas_avg_view_percent",
+    "canvas_avg_view_time",
+    "catalog_segment_actions",
+    "catalog_segment_value",
+    "catalog_segment_value_mobile_purchase_roas",
+    "catalog_segment_value_omni_purchase_roas",
+    "catalog_segment_value_website_purchase_roas",
+    "cost_per_15_sec_video_view",
+    "cost_per_2_sec_continuous_video_view",
+    # "cost_per_action_type",
+    "cost_per_ad_click",
     "cost_per_dda_countby_convs",
+    "cost_per_estimated_ad_recallers",
+    "cost_per_inline_link_click",
+    "cost_per_inline_post_engagement",
     "cost_per_one_thousand_ad_impression",
+    "cost_per_outbound_click",
+    "cost_per_thruplay",
+    "cost_per_unique_action_type",
     "cost_per_unique_conversion",
+    "cost_per_unique_inline_link_click",
+    "cost_per_unique_outbound_click",
+    "conversion_values",
+    "converted_product_quantity",
+    "converted_product_value",
+    "created_time",
     "creative_media_type",
     "dda_countby_convs",
     "dda_results",
+    "estimated_ad_recall_rate",
     "estimated_ad_recall_rate_lower_bound",
     "estimated_ad_recall_rate_upper_bound",
+    "estimated_ad_recallers",
     "estimated_ad_recallers_lower_bound",
     "estimated_ad_recallers_upper_bound",
+    "frequency",
+    "full_view_impressions",
+    "full_view_reach",
     "gender_targeting",
+    "instant_experience_clicks_to_open",
+    "instant_experience_clicks_to_start",
+    "instant_experience_outbound_clicks",
     "instagram_upcoming_event_reminders_set",
     "interactive_component_tap",
     "labels",
@@ -92,13 +84,34 @@ EXCLUDED_FIELDS = [
     "marketing_messages_cost_per_delivered",
     "marketing_messages_cost_per_link_btn_click",
     "marketing_messages_spend",
+    "marketing_messages_website_purchase_values",
+    "mobile_app_purchase_roas",
     "place_page_name",
+    "purchase_roas",
+    # "objective",
+    # "optimization_goal",
+    "qualifying_question_qualify_answer_rate",
+    "social_spend",
     "total_postbacks",
     "total_postbacks_detailed",
     "total_postbacks_detailed_v4",
+    "updated_time",
     "unique_video_continuous_2_sec_watched_actions",
     "unique_video_view_15_sec",
+    "video_continuous_2_sec_watched_actions",
+    "video_p100_watched_actions",
+    "video_p25_watched_actions",
+    "video_p50_watched_actions",
+    "video_p75_watched_actions",
+    "video_p95_watched_actions",
+    "video_play_actions",
+    "video_play_curve_actions",
+    "video_play_retention_0_to_15s_actions",
+    "video_play_retention_20_to_60s_actions",
+    "video_play_retention_graph_actions",
+    "video_time_watched_actions",
     "video_thruplay_watched_actions",
+    # already there
     "__module__",
     "__doc__",
     "__dict__",
@@ -150,13 +163,13 @@ class AdsInsightStream(Stream):
                 sub_props = [
                     th.Property(field.replace("field_", ""), th.StringType())
                     for field in list(AdsActionStats.Field.__dict__)
-                    if field in DEFAULT_REPORT_FIELDS
+                    if field not in EXCLUDED_FIELDS
                 ]
                 return th.ArrayType(th.ObjectType(*sub_props))
             if "AdsHistogramStats" in d_type:
                 sub_props = []
                 for field in list(AdsHistogramStats.Field.__dict__):
-                    if field in DEFAULT_REPORT_FIELDS:
+                    if field not in EXCLUDED_FIELDS:
                         clean_field = field.replace("field_", "")
                         if AdsHistogramStats._field_types[clean_field] == "string":  # noqa: SLF001
                             sub_props.append(th.Property(clean_field, th.StringType()))
@@ -179,7 +192,7 @@ class AdsInsightStream(Stream):
         properties.append(th.Property("id", th.StringType()))
         columns = list(AdsInsights.Field.__dict__)[1:]
         for field in columns:
-            if field not in DEFAULT_REPORT_FIELDS:
+            if field in EXCLUDED_FIELDS:
                 continue
             properties.append(th.Property(field, self._get_datatype(field)))
         for breakdown in self._report_definition["breakdowns"]:
