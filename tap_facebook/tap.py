@@ -181,7 +181,7 @@ class TapFacebook(Tap):
         """
         streams = [stream_class(tap=self) for stream_class in STREAM_TYPES]
         return [
-            # *streams,
+            *streams,
             AdsInsightStream(
                 tap=self,
                 report_definition=DEFAULT_INSIGHT_REPORT,
