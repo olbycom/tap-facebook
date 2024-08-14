@@ -107,7 +107,7 @@ class AdsStream(IncrementalFacebookStream):
                 ObjectType(
                     Property(
                         "application",
-                        ArrayType(ObjectType(Property("items", StringType))),
+                        ArrayType(Property("items", StringType)),
                     ),
                     Property("post", ArrayType(StringType)),
                     Property("conversion_id", ArrayType(StringType)),
