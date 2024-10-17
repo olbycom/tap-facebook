@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from singer_sdk.streams.core import REPLICATION_INCREMENTAL
+from typing import Any, Dict
+
+from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Context, Record
 from singer_sdk.typing import (
     ArrayType,
+    DateTimeType,
     IntegerType,
     ObjectType,
     PropertiesList,
@@ -63,19 +66,12 @@ class AdsStream(IncrementalFacebookStream):
     schema = PropertiesList(
         Property("bid_type", StringType),
         Property("account_id", StringType),
+        Property("ad_acive_time", StringType),
+        Property("ad_schedule_end_time", DateTimeType),
+        Property("ad_schedule_start_time", DateTimeType),
         Property("campaign_id", StringType),
         Property("adset_id", StringType),
         Property("bid_amount", IntegerType),
-        Property(
-            "bid_info",
-            ObjectType(
-                Property("CLICKS", IntegerType),
-                Property("ACTIONS", IntegerType),
-                Property("REACH", IntegerType),
-                Property("IMPRESSIONS", IntegerType),
-                Property("SOCIAL", IntegerType),
-            ),
-        ),
         Property("status", StringType),
         Property(
             "creative",
@@ -84,6 +80,7 @@ class AdsStream(IncrementalFacebookStream):
         Property("id", StringType),
         Property("updated_time", StringType),
         Property("created_time", StringType),
+        Property("conversion_domain", StringType),
         Property("name", StringType),
         Property("effective_status", StringType),
         Property("last_updated_by_app_id", StringType),
@@ -111,38 +108,42 @@ class AdsStream(IncrementalFacebookStream):
                     ),
                     Property("post", ArrayType(StringType)),
                     Property("conversion_id", ArrayType(StringType)),
-                    Property("action.type", ArrayType(Property("items", StringType))),
-                    Property("post.type", ArrayType(Property("items", StringType))),
-                    Property("page", ArrayType(Property("items", StringType))),
-                    Property("creative", ArrayType(Property("items", StringType))),
-                    Property("dataset", ArrayType(Property("items", StringType))),
-                    Property("event", ArrayType(Property("items", StringType))),
-                    Property("event.creator", ArrayType(Property("items", StringType))),
-                    Property("event_type", ArrayType(Property("items", StringType))),
-                    Property("fb_pixel", ArrayType(Property("items", StringType))),
+                    Property("action_type", ArrayType(StringType)),
+                    Property("post_type", ArrayType(StringType)),
+                    Property("page", ArrayType(StringType)),
+                    Property("creative", ArrayType(StringType)),
+                    Property("dataset", ArrayType(StringType)),
+                    Property("event", ArrayType(StringType)),
+                    Property("event_creator", ArrayType(StringType)),
+                    Property("event_type", ArrayType(StringType)),
+                    Property("fb_pixel", ArrayType(StringType)),
                     Property(
                         "fb_pixel_event",
-                        ArrayType(Property("items", StringType)),
+                        ArrayType(StringType),
                     ),
-                    Property("leadgen", ArrayType(Property("items", StringType))),
-                    Property("object", ArrayType(Property("items", StringType))),
-                    Property("object.domain", ArrayType(Property("items", StringType))),
-                    Property("offer", ArrayType(Property("items", StringType))),
-                    Property("offer.creator", ArrayType(Property("items", StringType))),
-                    Property("offsite_pixel", ArrayType(Property("items", StringType))),
-                    Property("page.parent", ArrayType(Property("items", StringType))),
-                    Property("post.object", ArrayType(Property("items", StringType))),
+                    Property("leadgen", ArrayType(StringType)),
+                    Property("object", ArrayType(StringType)),
+                    Property("object_domain", ArrayType(StringType)),
+                    Property("offer", ArrayType(StringType)),
+                    Property("offer_creator", ArrayType(StringType)),
+                    Property("offsite_pixel", ArrayType(StringType)),
+                    Property("page_parent", ArrayType(StringType)),
+                    Property("post_object", ArrayType(StringType)),
+                    Property("question", ArrayType(StringType)),
                     Property(
-                        "post.object.wall",
-                        ArrayType(Property("items", StringType)),
+                        "post_object_wall",
+                        ArrayType(StringType),
                     ),
-                    Property("question", ArrayType(Property("items", StringType))),
                     Property(
-                        "question.creator",
-                        ArrayType(Property("items", StringType)),
+                        "post_wall",
+                        ArrayType(StringType),
                     ),
-                    Property("response", ArrayType(Property("items", StringType))),
-                    Property("subtype", ArrayType(Property("items", StringType))),
+                    Property(
+                        "question_creator",
+                        ArrayType(StringType),
+                    ),
+                    Property("response", ArrayType(StringType)),
+                    Property("subtype", ArrayType(StringType)),
                 ),
             ),
         ),
@@ -150,7 +151,7 @@ class AdsStream(IncrementalFacebookStream):
             "conversion_specs",
             ArrayType(
                 ObjectType(
-                    Property("action.type", ArrayType(StringType)),
+                    Property("action_type", ArrayType(StringType)),
                     Property("conversion_id", ArrayType(StringType)),
                 ),
             ),
@@ -159,3 +160,18 @@ class AdsStream(IncrementalFacebookStream):
     ).to_dict()
 
     tap_stream_id = "ads"
+
+    def sanitize_field_names(self, record):
+        if isinstance(record, dict):
+            updated_record = {}
+            for key, value in record.items():
+                new_key = key.replace(".", "_")
+                updated_record[new_key] = self.sanitize_field_names(value)
+            return updated_record
+        elif isinstance(record, list):
+            return [self.sanitize_field_names(item) for item in record]
+        else:
+            return record
+
+    def post_process(self, row: Dict[str, Any], context: Dict | None = None) -> dict | None:
+        return super().post_process(self.sanitize_field_names(row), context)
