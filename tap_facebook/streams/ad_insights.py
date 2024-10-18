@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 import typing as t
 from functools import lru_cache
@@ -21,6 +20,8 @@ from facebook_business.exceptions import FacebookRequestError
 from singer_sdk import typing as th
 from singer_sdk.exceptions import FatalAPIError
 from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Stream
+
+from tap_facebook.api_helper import CALL_THRESHOLD_PERCENTAGE, has_reached_api_limit
 
 EXCLUDED_FIELDS = [
     "account_currency",
@@ -163,9 +164,9 @@ EXCLUDED_FIELDS = [
     "__dict__",
 ]
 
-POLL_JOB_SLEEP_TIME = 10
-AD_REPORT_RETRY_TIME = 5 * 60
-AD_REPORT_INCREMENT_SLEEP_TIME = 30
+POLL_JOB_SLEEP_TIME = 5
+AD_REPORT_RETRY_TIME = 2 * 60
+AD_REPORT_INCREMENT_SLEEP_TIME = 1
 INSIGHTS_MAX_WAIT_TO_START_SECONDS = 5 * 60
 INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS = 10 * 60
 JOB_STALE_ERROR_MESSAGE = (
@@ -180,11 +181,7 @@ class AdsInsightStream(Stream):
     name = "adsinsights"
     replication_method = REPLICATION_INCREMENTAL
     replication_key = "date_start"
-
-    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
-        """Initialize the stream."""
-        self._report_definition = kwargs.pop("report_definition")
-        super().__init__(*args, **kwargs)
+    api_sleep_time = 60
 
     @property
     def primary_keys(self) -> list[str] | None:
@@ -241,7 +238,7 @@ class AdsInsightStream(Stream):
             if field in EXCLUDED_FIELDS:
                 continue
             properties.append(th.Property(field, self._get_datatype(field)))
-        for breakdown in self._report_definition["breakdowns"]:
+        for breakdown in self.config.get("report_definition", {}).get("breakdowns"):
             properties.append(th.Property(breakdown, th.StringType()))
         return th.PropertiesList(*properties).to_dict()
 
@@ -259,22 +256,19 @@ class AdsInsightStream(Stream):
             msg = f"Couldn't find account with id {account_id}"
             raise RuntimeError(msg)
 
-    def _check_facebook_api_usage(self, headers: str, account_id: str) -> None:
-        total_time_to_regain_access = json.loads(headers.get("x-business-use-case-usage"))[account_id][0].get(
-            "estimated_time_to_regain_access"
+    def _check_facebook_api_usage(self, headers: str) -> None:
+        should_sleep = has_reached_api_limit(
+            headers=headers, account_id=self.config.get("account_id"), logger=self.logger
         )
-
-        self.logger.info(
-            "Total time to regain access is %s seconds.",
-            total_time_to_regain_access,
-        )
-
-        if total_time_to_regain_access > 0:
-            self.logger.info(
-                " ZZzzzzzzZZz - Sleeping for %s seconds until API limit is cleared.",
-                total_time_to_regain_access,
+        if should_sleep:
+            self.logger.warning(
+                f"Call count limit nearing threshold of {CALL_THRESHOLD_PERCENTAGE}%, sleeping for {self.api_sleep_time} seconds..."
             )
-            time.sleep(total_time_to_regain_access)
+            time.sleep(self.api_sleep_time)
+            self.api_sleep_time = min(self.api_sleep_time * 2, 1800)  # Double the sleep time, but cap it at 30min
+        else:
+            # Reset sleep time
+            self.api_sleep_time = 60
 
     def _trigger_async_insight_report_creation(self, account_id: str, params: dict) -> th.Any:
 
@@ -356,7 +350,7 @@ class AdsInsightStream(Stream):
         self,
         context: dict | None,
     ) -> pendulum.Date:
-        lookback_window = self._report_definition["lookback_window"]
+        lookback_window = self.config.get("report_definition", {}).get("lookback_window")
 
         config_start_date = pendulum.parse(self.config["start_date"]).date()
         incremental_start_date = pendulum.parse(
@@ -415,8 +409,7 @@ class AdsInsightStream(Stream):
         context: dict | None,
     ) -> t.Iterable[dict | tuple[dict, dict | None]]:
         self._initialize_client()
-
-        time_increment = self._report_definition["time_increment_days"]
+        time_increment = self.config.get("report_definition", {}).get("time_increment_days")
 
         sync_end_date = pendulum.parse(
             self.config.get("end_date", pendulum.today().to_date_string()),
@@ -427,16 +420,16 @@ class AdsInsightStream(Stream):
 
         while report_date <= sync_end_date:
             params = {
-                "level": self._report_definition["level"],
-                "action_breakdowns": self._report_definition["action_breakdowns"],
-                "action_report_time": self._report_definition["action_report_time"],
-                "breakdowns": self._report_definition["breakdowns"],
+                "level": self.config.get("report_definition", {}).get("level"),
+                "action_breakdowns": self.config.get("report_definition", {}).get("action_breakdowns"),
+                "action_report_time": self.config.get("report_definition", {}).get("action_report_time"),
+                "breakdowns": self.config.get("report_definition", {}).get("breakdowns"),
                 "fields": columns,
                 "time_increment": time_increment,
                 "limit": 100,
                 "action_attribution_windows": [
-                    self._report_definition["action_attribution_windows_view"],
-                    self._report_definition["action_attribution_windows_click"],
+                    self.config.get("report_definition", {}).get("action_attribution_windows_view"),
+                    self.config.get("report_definition", {}).get("action_attribution_windows_click"),
                 ],
                 "time_range": {
                     "since": report_date.to_date_string(),
@@ -449,8 +442,8 @@ class AdsInsightStream(Stream):
                     params=params, account_id=self.config["account_id"]
                 )
 
-                if response._http_status != 200:
-                    self._check_facebook_api_usage(headers=response._headers, account_id=self.config["account_id"])
+                self._check_facebook_api_usage(headers=response._headers)
+                if response._http_status != HTTPStatus.OK:
                     continue
 
                 report_run_id = response.json()["report_run_id"]

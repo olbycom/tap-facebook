@@ -37,18 +37,6 @@ STREAM_TYPES = [
     AdVideos,
 ]
 
-DEFAULT_INSIGHT_REPORT = {
-    "name": "default",
-    "level": "ad",
-    "action_breakdowns": [],
-    "breakdowns": [],
-    "time_increment_days": 1,
-    "action_attribution_windows_view": "1d_view",
-    "action_attribution_windows_click": "7d_click",
-    "action_report_time": "mixed",
-    "lookback_window": 28,
-}
-
 
 class TapFacebook(Tap):
     """Singer tap for extracting data from the Facebook Marketing API."""
@@ -67,7 +55,7 @@ class TapFacebook(Tap):
             "api_version",
             th.StringType,
             description="The API version to request data from.",
-            default="v20.0",
+            default="v21.0",
         ),
         th.Property(
             "account_id",
@@ -159,7 +147,7 @@ class TapFacebook(Tap):
                 "[Ad Insights docs](https://developers.facebook.com/docs/marketing-api/reference/adgroup/insights) "  # noqa: E501
                 "for more details."
             ),
-            default=DEFAULT_INSIGHT_REPORT,
+            default={},
         ),
         th.Property(
             "start_date",
@@ -182,10 +170,7 @@ class TapFacebook(Tap):
         streams = [stream_class(tap=self) for stream_class in STREAM_TYPES]
         return [
             *streams,
-            AdsInsightStream(
-                tap=self,
-                report_definition=DEFAULT_INSIGHT_REPORT,
-            ),
+            AdsInsightStream(tap=self),
         ]
 
 
