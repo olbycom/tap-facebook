@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import typing as t
 from http import HTTPStatus
+from time import sleep
 from urllib.parse import urlparse
 
 import pendulum
@@ -12,6 +13,8 @@ from singer_sdk.authenticators import BearerTokenAuthenticator
 from singer_sdk.exceptions import FatalAPIError, RetriableAPIError
 from singer_sdk.helpers.jsonpath import extract_jsonpath
 from singer_sdk.streams import RESTStream
+
+from tap_facebook.api_helper import CALL_THRESHOLD_PERCENTAGE, has_reached_api_limit
 
 if t.TYPE_CHECKING:
     import requests
@@ -22,6 +25,8 @@ class FacebookStream(RESTStream):
 
     # add account id in the url
     # path and fields will be added to this url in streams.pys
+
+    api_sleep_time = 60
 
     @property
     def url_base(self) -> str:
@@ -99,15 +104,23 @@ class FacebookStream(RESTStream):
             FatalAPIError: If the request is not retriable.
             RetriableAPIError: If the request is retriable.
         """
-        full_path = urlparse(response.url).path
-        if response.status_code in self.tolerated_http_errors:
-            msg = (
-                f"{response.status_code} Tolerated Status Code "
-                f"(Reason: {response.reason}) for path: {full_path}"
+        if response.status_code == HTTPStatus.OK:
+            should_sleep = has_reached_api_limit(
+                headers=response.headers, account_id=self.config.get("account_id"), logger=self.logger
             )
-            self.logger.info(msg)
+            if should_sleep:
+                self.logger.warning(
+                    f"Call count limit nearing threshold of {CALL_THRESHOLD_PERCENTAGE}%, sleeping for {self.api_sleep_time} seconds..."
+                )
+                sleep(self.api_sleep_time)
+                self.api_sleep_time = min(self.api_sleep_time * 2, 1800)  # Double the sleep time, but cap it at 30min
+            else:
+                # Reset sleep time
+                self.api_sleep_time = 60
+
             return
 
+        full_path = urlparse(response.url).path
         if HTTPStatus.BAD_REQUEST <= response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR:
             msg = (
                 f"{response.status_code} Client Error: "
@@ -115,8 +128,7 @@ class FacebookStream(RESTStream):
             )
             # Retry on reaching rate limit
             if (
-                response.status_code == HTTPStatus.BAD_REQUEST
-                and "too many calls" in str(response.content).lower()
+                response.status_code == HTTPStatus.BAD_REQUEST and "too many calls" in str(response.content).lower()
             ) or (
                 response.status_code == HTTPStatus.BAD_REQUEST
                 and "request limit reached" in str(response.content).lower()
@@ -140,7 +152,7 @@ class FacebookStream(RESTStream):
         Returns:
             int: limit
         """
-        return 20
+        return 15
 
 
 class IncrementalFacebookStream(FacebookStream):
