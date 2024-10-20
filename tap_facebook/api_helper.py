@@ -22,8 +22,10 @@ def get_usage_headers(headers: dict, account_id: str, logger: Logger):
         logger.info(f"API Usage | X-Ad-Account-Usage: {ad_account_usage}")
 
     if business_case_usage:
-        usage_list = json.loads(business_case_usage).get(account_id, [])
-        for entry in usage_list:
+        usage_list = json.loads(business_case_usage)
+        if account_id not in usage_list:
+            business_case_usage = {}
+        for entry in usage_list.get(account_id, []):
             if entry.get("type") in ["ads_management", "ads_insights"]:
                 business_case_usage = entry
                 logger.info(f"API Usage | X-Business-Use-Case-Usage: {business_case_usage}")
