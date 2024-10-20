@@ -26,7 +26,7 @@ def get_usage_headers(headers: dict, account_id: str, logger: Logger):
         if account_id not in usage_list:
             business_case_usage = {}
         for entry in usage_list.get(account_id, []):
-            if entry.get("type") in ["ads_management", "ads_insights"]:
+            if entry.get("type") in ["ads_management", "ads_insights", "custom_audience"]:
                 business_case_usage = entry
                 logger.info(f"API Usage | X-Business-Use-Case-Usage: {business_case_usage}")
 
