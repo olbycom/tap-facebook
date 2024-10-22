@@ -42,7 +42,9 @@ def has_reached_api_limit(headers: dict, account_id: str, logger: Logger) -> boo
         total_cputime = max(app_usage.get("total_cputime", 0), business_case_usage.get("total_cputime", 0))
         total_time = max(app_usage.get("total_time", 0), business_case_usage.get("total_time", 0))
         acc_id_util_pct = ad_account_usage.get("acc_id_util_pct", 0)
-        estimated_time_to_regain_access = int(business_case_usage.get("estimated_time_to_regain_access", 0))
+        estimated_time_to_regain_access = (
+            int(business_case_usage.get("estimated_time_to_regain_access", 0)) * 60
+        )  # This time is in minutes according to the docs
         reset_time_duration = int(ad_account_usage.get("reset_time_duration", 0))
 
         logger.warning(
@@ -59,7 +61,7 @@ def has_reached_api_limit(headers: dict, account_id: str, logger: Logger) -> boo
             sleep(over_quota_sleep_time)
             return False
 
-        if max(call_count, total_cputime, total_time, acc_id_util_pct) > CALL_THRESHOLD_PERCENTAGE:
+        if max(call_count, acc_id_util_pct) > CALL_THRESHOLD_PERCENTAGE:
             return True
         else:
             return False

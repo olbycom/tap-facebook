@@ -113,7 +113,7 @@ class FacebookStream(RESTStream):
                     f"Call count limit nearing threshold of {CALL_THRESHOLD_PERCENTAGE}%, sleeping for {self.api_sleep_time} seconds..."
                 )
                 sleep(self.api_sleep_time)
-                self.api_sleep_time = min(self.api_sleep_time * 2, 1800)  # Double the sleep time, but cap it at 30min
+                self.api_sleep_time = min(self.api_sleep_time * 2, 300)  # Double the sleep time, but cap it at 5min
             else:
                 # Reset sleep time
                 self.api_sleep_time = 60
@@ -133,6 +133,10 @@ class FacebookStream(RESTStream):
                 response.status_code == HTTPStatus.BAD_REQUEST
                 and "request limit reached" in str(response.content).lower()
             ):
+                # in case it already exceeded the limit, parse the headers to check if there's any suggested reset time to sleep
+                has_reached_api_limit(
+                    headers=response.headers, account_id=self.config.get("account_id"), logger=self.logger
+                )
                 raise RetriableAPIError(msg, response)
 
             raise FatalAPIError(msg)

@@ -265,7 +265,7 @@ class AdsInsightStream(Stream):
                 f"Call count limit nearing threshold of {CALL_THRESHOLD_PERCENTAGE}%, sleeping for {self.api_sleep_time} seconds..."
             )
             time.sleep(self.api_sleep_time)
-            self.api_sleep_time = min(self.api_sleep_time * 2, 1800)  # Double the sleep time, but cap it at 30min
+            self.api_sleep_time = min(self.api_sleep_time * 2, 300)  # Double the sleep time, but cap it at 5min
         else:
             # Reset sleep time
             self.api_sleep_time = 60
