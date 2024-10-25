@@ -57,8 +57,8 @@ def has_reached_api_limit(headers: dict, account_id: str, logger: Logger) -> boo
         over_quota_sleep_time = max(estimated_time_to_regain_access, reset_time_duration)
         if over_quota_sleep_time > 0:
             # quota already reached, let's wait for the suggested time and then go back to making requests
-            logger.warning(f"API Usage | Rate limit reached, sleeping for {over_quota_sleep_time}s.")
-            sleep(over_quota_sleep_time)
+            # logger.warning(f"API Usage | Rate limit reached, sleeping for {over_quota_sleep_time}s.")
+            # sleep(over_quota_sleep_time)
             return False
 
         if max(call_count, acc_id_util_pct) > CALL_THRESHOLD_PERCENTAGE:
