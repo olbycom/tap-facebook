@@ -15,6 +15,10 @@ from tap_facebook.streams import (
     AdImages,
     AdLabelsStream,
     AdsetsStream,
+    AdsInsightByAgeAndGenderStream,
+    AdsInsightByCountryStream,
+    AdsInsightByDevicePlatformStream,
+    AdsInsightByRegionStream,
     AdsInsightStream,
     AdsStream,
     AdVideos,
@@ -25,6 +29,7 @@ from tap_facebook.streams import (
 )
 
 STREAM_TYPES = [
+    AdsInsightStream,
     AdsetsStream,
     AdsStream,
     CampaignStream,
@@ -35,6 +40,13 @@ STREAM_TYPES = [
     CustomAudiences,
     AdImages,
     AdVideos,
+]
+
+ADVANCED_STREAM_TYPES = [
+    AdsInsightByAgeAndGenderStream,
+    AdsInsightByCountryStream,
+    AdsInsightByDevicePlatformStream,
+    AdsInsightByRegionStream,
 ]
 
 
@@ -159,6 +171,12 @@ class TapFacebook(Tap):
             th.DateTimeType,
             description="The latest record date to sync",
         ),
+        th.Property(
+            "enable_advanced_reports",
+            th.BooleanType,
+            default=False,
+            description="Define whether the user should have access to advanced report streams or not. Should be used with caution since the extraction time can increase significantly.",
+        ),
     ).to_dict()
 
     def discover_streams(self) -> list[FacebookStream]:
@@ -168,10 +186,12 @@ class TapFacebook(Tap):
             A list of discovered streams.
         """
         streams = [stream_class(tap=self) for stream_class in STREAM_TYPES]
-        return [
-            *streams,
-            AdsInsightStream(tap=self),
-        ]
+
+        advanced_streams = []
+        if self.config.get("enable_advanced_reports", False):
+            advanced_streams = [stream_class(tap=self) for stream_class in ADVANCED_STREAM_TYPES]
+
+        return [*streams, *advanced_streams]
 
 
 if __name__ == "__main__":

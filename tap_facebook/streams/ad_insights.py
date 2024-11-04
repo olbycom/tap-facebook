@@ -184,6 +184,10 @@ class AdsInsightStream(Stream):
     api_sleep_time = 60
 
     @property
+    def report_breakdowns(self) -> list[str] | None:
+        return self.config.get("report_definition", {}).get("breakdowns")
+
+    @property
     def primary_keys(self) -> list[str] | None:
         return ["id"]
 
@@ -238,7 +242,7 @@ class AdsInsightStream(Stream):
             if field in EXCLUDED_FIELDS:
                 continue
             properties.append(th.Property(field, self._get_datatype(field)))
-        for breakdown in self.config.get("report_definition", {}).get("breakdowns"):
+        for breakdown in self.report_breakdowns:
             properties.append(th.Property(breakdown, th.StringType()))
         return th.PropertiesList(*properties).to_dict()
 
@@ -344,7 +348,8 @@ class AdsInsightStream(Stream):
         if "id" in columns:
             columns.remove("id")
 
-        return columns
+        # don't pass along columns that are part of breakdowns
+        return [column for column in columns if column not in self.report_breakdowns]
 
     def _get_start_date(
         self,
@@ -423,7 +428,7 @@ class AdsInsightStream(Stream):
                 "level": self.config.get("report_definition", {}).get("level"),
                 "action_breakdowns": self.config.get("report_definition", {}).get("action_breakdowns"),
                 "action_report_time": self.config.get("report_definition", {}).get("action_report_time"),
-                "breakdowns": self.config.get("report_definition", {}).get("breakdowns"),
+                "breakdowns": self.report_breakdowns,
                 "fields": columns,
                 "time_increment": time_increment,
                 "limit": 100,
@@ -479,3 +484,35 @@ class AdsInsightStream(Stream):
 
                 self.logger.warning(f"An unhandled error occurred: {fb_err}. Stopping execution.")
                 raise FatalAPIError(fb_err)
+
+
+class AdsInsightByAgeAndGenderStream(AdsInsightStream):
+    name = "adsinsights_by_age_and_gender"
+
+    @property
+    def report_breakdowns(self) -> list[str] | None:
+        return ["age", "gender"]
+
+
+class AdsInsightByCountryStream(AdsInsightStream):
+    name = "adsinsights_by_country"
+
+    @property
+    def report_breakdowns(self) -> list[str] | None:
+        return ["country"]
+
+
+class AdsInsightByDevicePlatformStream(AdsInsightStream):
+    name = "adsinsights_by_device_platform"
+
+    @property
+    def report_breakdowns(self) -> list[str] | None:
+        return ["device_platform"]
+
+
+class AdsInsightByRegionStream(AdsInsightStream):
+    name = "adsinsights_by_region"
+
+    @property
+    def report_breakdowns(self) -> list[str] | None:
+        return ["region"]

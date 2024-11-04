@@ -2,7 +2,13 @@
 
 from tap_facebook.streams.ad_accounts import AdAccountsStream
 from tap_facebook.streams.ad_images import AdImages
-from tap_facebook.streams.ad_insights import AdsInsightStream
+from tap_facebook.streams.ad_insights import (
+    AdsInsightByAgeAndGenderStream,
+    AdsInsightByCountryStream,
+    AdsInsightByDevicePlatformStream,
+    AdsInsightByRegionStream,
+    AdsInsightStream,
+)
 from tap_facebook.streams.ad_labels import AdLabelsStream
 from tap_facebook.streams.ad_videos import AdVideos
 from tap_facebook.streams.ads import AdsStream
@@ -18,6 +24,10 @@ __all__ = [
     "AdLabelsStream",
     "AdsetsStream",
     "AdsInsightStream",
+    "AdsInsightByAgeAndGenderStream",
+    "AdsInsightByCountryStream",
+    "AdsInsightByDevicePlatformStream",
+    "AdsInsightByRegionStream",
     "AdsStream",
     "AdVideos",
     "CampaignStream",
