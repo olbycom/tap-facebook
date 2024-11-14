@@ -206,13 +206,25 @@ class AdsetsStream(IncrementalFacebookStream):
                 Property(
                     "custom_audiences",
                     ArrayType(
-                        ObjectType(Property("id", StringType)),
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                            Property("primary_city_id", IntegerType),
+                            Property("country", StringType),
+                            Property("region_id", IntegerType),
+                        ),
                     ),
                 ),
                 Property(
                     "excluded_custom_audiences",
                     ArrayType(
-                        ObjectType(Property("id", StringType)),
+                        ObjectType(
+                            Property("id", StringType),
+                            Property("name", StringType),
+                            Property("primary_city_id", IntegerType),
+                            Property("country", StringType),
+                            Property("region_id", IntegerType),
+                        ),
                     ),
                 ),
                 Property(
@@ -325,7 +337,10 @@ class AdsetsStream(IncrementalFacebookStream):
                             ArrayType(
                                 ObjectType(
                                     Property("key", StringType),
+                                    Property("country", StringType),
+                                    Property("name", StringType),
                                     Property("radius", IntegerType),
+                                    Property("region_id", IntegerType),
                                     Property("distance_unit", StringType),
                                 )
                             ),
@@ -504,7 +519,10 @@ class AdsetsStream(IncrementalFacebookStream):
                             ArrayType(
                                 ObjectType(
                                     Property("key", StringType),
+                                    Property("country", StringType),
+                                    Property("name", StringType),
                                     Property("radius", IntegerType),
+                                    Property("region_id", IntegerType),
                                     Property("distance_unit", StringType),
                                 )
                             ),
