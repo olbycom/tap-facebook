@@ -303,7 +303,22 @@ class AdsetsStream(IncrementalFacebookStream):
                             "location_types",
                             ArrayType(StringType),
                         ),
-                        Property("places", ArrayType(StringType)),
+                        Property(
+                            "places",
+                            ArrayType(
+                                ObjectType(
+                                    Property("key", StringType),
+                                    Property("country", StringType),
+                                    Property("latitude", NumberType),
+                                    Property("longitude", NumberType),
+                                    Property("name", StringType),
+                                    Property("radius", IntegerType),
+                                    Property("primary_city_id", IntegerType),
+                                    Property("region_id", IntegerType),
+                                    Property("distance_unit", StringType),
+                                )
+                            ),
+                        ),
                         Property("regions", ArrayType(ObjectType(Property("key", StringType)))),
                         Property(
                             "cities",
@@ -467,7 +482,22 @@ class AdsetsStream(IncrementalFacebookStream):
                             "location_types",
                             ArrayType(StringType),
                         ),
-                        Property("places", ArrayType(StringType)),
+                        Property(
+                            "places",
+                            ArrayType(
+                                ObjectType(
+                                    Property("key", StringType),
+                                    Property("country", StringType),
+                                    Property("latitude", NumberType),
+                                    Property("longitude", NumberType),
+                                    Property("name", StringType),
+                                    Property("radius", IntegerType),
+                                    Property("primary_city_id", IntegerType),
+                                    Property("region_id", IntegerType),
+                                    Property("distance_unit", StringType),
+                                )
+                            ),
+                        ),
                         Property("regions", ArrayType(ObjectType(Property("key", StringType)))),
                         Property(
                             "cities",
