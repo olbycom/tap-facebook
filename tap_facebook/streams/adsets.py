@@ -326,7 +326,7 @@ class AdsetsStream(IncrementalFacebookStream):
                                     Property("name", StringType),
                                     Property("radius", IntegerType),
                                     Property("primary_city_id", IntegerType),
-                                    Property("region_id", IntegerType),
+                                    Property("region_id", StringType),
                                     Property("distance_unit", StringType),
                                 )
                             ),
@@ -340,7 +340,7 @@ class AdsetsStream(IncrementalFacebookStream):
                                     Property("country", StringType),
                                     Property("name", StringType),
                                     Property("radius", IntegerType),
-                                    Property("region_id", IntegerType),
+                                    Property("region_id", StringType),
                                     Property("distance_unit", StringType),
                                 )
                             ),
@@ -508,7 +508,7 @@ class AdsetsStream(IncrementalFacebookStream):
                                     Property("name", StringType),
                                     Property("radius", IntegerType),
                                     Property("primary_city_id", IntegerType),
-                                    Property("region_id", IntegerType),
+                                    Property("region_id", StringType),
                                     Property("distance_unit", StringType),
                                 )
                             ),
@@ -522,7 +522,7 @@ class AdsetsStream(IncrementalFacebookStream):
                                     Property("country", StringType),
                                     Property("name", StringType),
                                     Property("radius", IntegerType),
-                                    Property("region_id", IntegerType),
+                                    Property("region_id", StringType),
                                     Property("distance_unit", StringType),
                                 )
                             ),
