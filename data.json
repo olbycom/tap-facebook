@@ -1,0 +1,6 @@
+{
+  "name": "tap-facebook",
+  "pip_url": "git+https://github.com/olbycom/tap-facebook.git@nekt",
+  "variant": "meltanolabs",
+  "capabilities": ["state", "catalog", "discover"]
+}
