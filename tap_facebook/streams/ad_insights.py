@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import typing as t
 from functools import lru_cache
@@ -22,6 +23,8 @@ from singer_sdk.exceptions import FatalAPIError
 from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Stream
 
 from tap_facebook.api_helper import CALL_THRESHOLD_PERCENTAGE, has_reached_api_limit
+
+internal_logger = logging.getLogger("internal")
 
 EXCLUDED_FIELDS = [
     "account_currency",
@@ -262,10 +265,11 @@ class AdsInsightStream(Stream):
 
     def _check_facebook_api_usage(self, headers: str) -> None:
         should_sleep = has_reached_api_limit(
-            headers=headers, account_id=self.config.get("account_id"), logger=self.logger
+            headers=headers,
+            account_id=self.config.get("account_id"),
         )
         if should_sleep:
-            self.logger.warning(
+            self.internal_logger.warning(
                 f"Call count limit nearing threshold of {CALL_THRESHOLD_PERCENTAGE}%, sleeping for {self.api_sleep_time} seconds..."
             )
             time.sleep(self.api_sleep_time)
@@ -300,7 +304,7 @@ class AdsInsightStream(Stream):
             percent_complete = job[AdReportRun.Field.async_percent_completion]
 
             job_id = job["id"]
-            self.logger.info(
+            self.internal_logger.info(
                 "ID: %s - %s for %s - %s%% done. ",
                 job_id,
                 status,
@@ -311,27 +315,27 @@ class AdsInsightStream(Stream):
             if status == "Job Completed":
                 return job
             if status == "Job Failed":
-                self.logger.info(
+                self.internal_logger.info(
                     "Insights job %s failed, trying again in a minute." + JOB_STALE_ERROR_MESSAGE,
                     job_id,
                 )
                 return
             if duration > INSIGHTS_MAX_WAIT_TO_START_SECONDS and percent_complete == 0:
-                self.logger.info(
+                self.internal_logger.info(
                     "Insights job %s did not start after %s seconds." + JOB_STALE_ERROR_MESSAGE,
                     job_id,
                     duration,
                 )
                 return
             if duration > INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS:
-                self.logger.info(
+                self.internal_logger.info(
                     "Insights job %s did not complete after %s seconds",
                     job_id,
                     INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS,
                 )
                 return
 
-            self.logger.info(
+            self.internal_logger.info(
                 "Sleeping for %s seconds until job is done",
                 POLL_JOB_SLEEP_TIME,
             )
@@ -366,9 +370,9 @@ class AdsInsightStream(Stream):
         # Don't use lookback if this is the first sync. Just start where the user requested.
         if config_start_date >= incremental_start_date:
             report_start = config_start_date
-            self.logger.info("Using configured start_date as report start filter %s.", report_start)
+            self.internal_logger.info("Using configured start_date as report start filter %s.", report_start)
         else:
-            self.logger.info(
+            self.internal_logger.info(
                 "Incremental sync, applying lookback '%s' to the "
                 "bookmark start_date '%s'. Syncing "
                 "reports starting on '%s'.",
@@ -386,7 +390,7 @@ class AdsInsightStream(Stream):
         oldest_allowed_start_date = today.subtract(months=37)
         if report_start < oldest_allowed_start_date:
             report_start = oldest_allowed_start_date
-            self.logger.info(
+            self.internal_logger.info(
                 "Report start date '%s' is older than 37 months. " "Using oldest allowed start date '%s' instead.",
                 report_start,
                 oldest_allowed_start_date,
@@ -479,10 +483,11 @@ class AdsInsightStream(Stream):
                 if fb_err.api_error_code == HTTPStatus.BAD_REQUEST and "unsupported get request" in str(
                     fb_err.api_error_message.lower()
                 ):
-                    self.logger.warning(f"API Error: {fb_err.api_error_message()}. Trying again..")
+                    self.internal_logger.warning(f"API Error: {fb_err.api_error_message()}. Trying again..")
                     continue
 
-                self.logger.warning(f"An unhandled error occurred: {fb_err}. Stopping execution.")
+                self.user_logger.error(f"An unhandled error occurred: {fb_err}. Stopping execution.")
+                self.internal_logger.error(f"An unhandled error occurred: {fb_err}. Stopping execution.")
                 raise FatalAPIError(fb_err)
 
 

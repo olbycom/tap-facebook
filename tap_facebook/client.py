@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import typing as t
 from http import HTTPStatus
-from time import sleep
 from urllib.parse import urlparse
 
 import pendulum
@@ -15,6 +15,9 @@ from singer_sdk.helpers.jsonpath import extract_jsonpath
 from singer_sdk.streams import RESTStream
 
 from tap_facebook.api_helper import CALL_THRESHOLD_PERCENTAGE, has_reached_api_limit
+
+internal_logger = logging.getLogger("internal")
+user_logger = logging.getLogger("user")
 
 if t.TYPE_CHECKING:
     import requests
@@ -106,10 +109,11 @@ class FacebookStream(RESTStream):
         """
         if response.status_code == HTTPStatus.OK:
             should_sleep = has_reached_api_limit(
-                headers=response.headers, account_id=self.config.get("account_id"), logger=self.logger
+                headers=response.headers,
+                account_id=self.config.get("account_id"),
             )
             # if should_sleep:
-            #     self.logger.warning(
+            #     self.internal_logger.warning(
             #         f"Call count limit nearing threshold of {CALL_THRESHOLD_PERCENTAGE}%, sleeping for {self.api_sleep_time} seconds..."
             #     )
             #     sleep(self.api_sleep_time)
@@ -135,7 +139,8 @@ class FacebookStream(RESTStream):
             ):
                 # in case it already exceeded the limit, parse the headers to check if there's any suggested reset time to sleep
                 has_reached_api_limit(
-                    headers=response.headers, account_id=self.config.get("account_id"), logger=self.logger
+                    headers=response.headers,
+                    account_id=self.config.get("account_id"),
                 )
                 raise RetriableAPIError(msg, response)
 

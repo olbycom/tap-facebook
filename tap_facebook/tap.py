@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import typing as t
 
 from singer_sdk import Tap
 from singer_sdk import typing as th  # JSON schema typing helpers
+
+internal_logger = logging.getLogger("internal")
+user_logger = logging.getLogger("user")
 
 if t.TYPE_CHECKING:
     from tap_facebook.client import FacebookStream
@@ -179,7 +183,7 @@ class TapFacebook(Tap):
         ),
     ).to_dict()
 
-    def discover_streams(self) -> list[FacebookStream]:
+    def _discover_streams(self) -> list[FacebookStream]:
         """Return a list of discovered streams.
 
         Returns:
@@ -192,6 +196,16 @@ class TapFacebook(Tap):
             advanced_streams = [stream_class(tap=self) for stream_class in ADVANCED_STREAM_TYPES]
 
         return [*streams, *advanced_streams]
+
+    def discover_streams(self) -> list[FacebookStream]:
+        try:
+            return self._discover_streams()
+        except Exception as e:
+            internal_logger.error(
+                f"Error on discover: {e}",
+                exc_info=True,
+            )
+            raise
 
 
 if __name__ == "__main__":
