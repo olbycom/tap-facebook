@@ -113,7 +113,7 @@ class FacebookStream(RESTStream):
                 account_id=self.config.get("account_id"),
             )
             # if should_sleep:
-            #     self.internal_logger.warning(
+            #     internal_logger.warning(
             #         f"Call count limit nearing threshold of {CALL_THRESHOLD_PERCENTAGE}%, sleeping for {self.api_sleep_time} seconds..."
             #     )
             #     sleep(self.api_sleep_time)
