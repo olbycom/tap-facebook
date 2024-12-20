@@ -1,6 +1,8 @@
 {
   "name": "tap-facebook",
-  "pip_url": "git+https://github.com/olbycom/tap-facebook.git@nekt",
+  "namespace": "tap_facebook",
+  "pip_url": "-e ./extract/tap-facebook",
+  "executable": "tap-facebook",
   "variant": "meltanolabs",
   "capabilities": ["state", "catalog", "discover"]
 }
