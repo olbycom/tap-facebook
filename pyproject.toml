@@ -18,44 +18,42 @@ python = ">=3.9"
 requests = "~=2.31.0"
 singer-sdk = ">=0.27,<0.39"
 facebook-business = "^19.0.0"
-
 custom-logger = {git = "https://github.com/olbycom/nekt-custom-logger-module.git", rev = "v0.0.3"}
 [tool.poetry.dev-dependencies]
 pytest = ">=7.4.1"
 singer-sdk = {version = ">=0.27,<0.39", extras = ["testing"]}
 
-[tool.isort]
-profile = "black"
-multi_line_output = 3 # Vertical Hanging Indent
-src_paths = "tap_facebook"
+[tool.poetry.extras]
+s3 = ["fs-s3fs"]
+
+[tool.pytest.ini_options]
+addopts = '--durations=10'
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+plugins = "sqlmypy"
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+ignore = [
+    "COM812",  # missing-trailing-comma
+    "ISC001",  # single-line-implicit-string-concatenation
+]
+select = ["ALL"]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [build-system]
-requires = ["poetry-core==1.8.1", "poetry-dynamic-versioning==1.2.0"]
-build-backend = "poetry_dynamic_versioning.backend"
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 # CLI declaration
 tap-facebook = 'tap_facebook.tap:TapFacebook.cli'
-
-[tool.poetry-dynamic-versioning]
-enable = true
-
-[tool.ruff]
-line-length = 100
-target-version = "py38"
-
-[tool.ruff.lint]
-ignore = ["ANN101", "DJ", "PD", "D101", "D102"]
-select = ["ALL"]
-
-[tool.ruff.lint.flake8-import-conventions]
-banned-from = ["typing"]
-
-[tool.ruff.lint.flake8-import-conventions.extend-aliases]
-typing = "t"
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ANN201", "D103", "S101", "PLR2004"]
-
-[tool.ruff.lint.pydocstyle]
-convention = "google"
