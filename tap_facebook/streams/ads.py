@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Dict
 
+import requests
 from nekt_singer_sdk.streams.core import REPLICATION_INCREMENTAL
 from nekt_singer_sdk.typing import (
     ArrayType,
@@ -254,6 +255,26 @@ class AdsStream(IncrementalFacebookStream):
     ).to_dict()
 
     tap_stream_id = "ads"
+
+    page_size = 100
+
+    def get_next_page_token(
+        self,
+        response: requests.Response,
+        previous_token: Any | None,
+    ) -> Any | None:
+        """Return next page token, using paging.next to detect the last page.
+
+        Facebook cursor pagination can loop indefinitely at small page sizes
+        because paging.cursors.after is always present, even on the last page.
+        At page_size >= 50 (we use 100), paging.next reliably indicates whether
+        more pages exist.
+        """
+        resp_json = response.json()
+        paging = resp_json.get("paging", {})
+        if "next" not in paging:
+            return None
+        return paging.get("cursors", {}).get("after")
 
     def sanitize_field_names(self, record):
         if isinstance(record, dict):
