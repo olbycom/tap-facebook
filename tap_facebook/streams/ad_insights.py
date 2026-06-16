@@ -149,7 +149,7 @@ EXCLUDED_FIELDS = [
     # "video_p50_watched_actions",
     # "video_p75_watched_actions",
     # "video_p95_watched_actions",
-    "video_play_actions",
+    # "video_play_actions",
     "video_play_curve_actions",
     "video_play_retention_0_to_15s_actions",
     "video_play_retention_20_to_60s_actions",
