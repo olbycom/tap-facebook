@@ -177,10 +177,60 @@ JOB_STALE_ERROR_MESSAGE = (
 )
 
 
+VALID_GRANULARITIES = {"daily", "monthly"}
+
+
 class AdsInsightStream(FacebookSDKStream):
     name = "adsinsights"
     replication_key = "date_start"
     api_sleep_time = 60
+
+    @property
+    def effective_granularity(self) -> str:
+        """Return the resolved granularity for this stream.
+
+        Falls back to 'daily' if the configured value is not recognized.
+        """
+        requested = self.config.get("performance_granularity", "daily")
+        if requested in VALID_GRANULARITIES:
+            return requested
+        user_logger.warning(
+            f"[{self.name}] Granularity '{requested}' is not supported. Falling back to 'daily'."
+        )
+        return "daily"
+
+    @property
+    def _effective_time_increment(self) -> int | str:
+        """Return the Facebook API time_increment value based on granularity.
+
+        For 'daily': uses time_increment_days from report_definition (default 1).
+        For 'monthly': returns the string "monthly" (accepted by Facebook API).
+        """
+        if self.effective_granularity == "monthly":
+            return "monthly"
+        return self.config.get("report_definition", {}).get("time_increment_days", 1)
+
+    def _advance_date(self, current_date: pendulum.Date, time_increment: int | str) -> pendulum.Date:
+        """Advance the date by the appropriate amount based on granularity."""
+        if self.effective_granularity == "monthly":
+            return current_date.add(months=1).start_of("month")
+        return current_date.add(days=time_increment)
+
+    def _get_time_range(self, current_date: pendulum.Date) -> dict:
+        """Return the time_range dict for the Facebook API request.
+
+        For 'daily': since and until are the same day.
+        For 'monthly': since is the first day, until is the last day of the month.
+        """
+        if self.effective_granularity == "monthly":
+            return {
+                "since": current_date.start_of("month").to_date_string(),
+                "until": current_date.end_of("month").to_date_string(),
+            }
+        return {
+            "since": current_date.to_date_string(),
+            "until": current_date.to_date_string(),
+        }
 
     @property
     def report_breakdowns(self) -> list[str] | None:
@@ -281,7 +331,7 @@ class AdsInsightStream(FacebookSDKStream):
         batch_size: int,
         end_date: pendulum.Date,
         columns: list[str],
-        time_increment: int,
+        time_increment: int | str,
     ) -> list[dict]:
         """Create a batch of report requests without waiting for completion.
 
@@ -290,7 +340,7 @@ class AdsInsightStream(FacebookSDKStream):
             batch_size: Number of reports to create in this batch
             end_date: End date (to not exceed)
             columns: Report columns
-            time_increment: Days per report
+            time_increment: Days per report (int) or "monthly" for monthly aggregation
 
         Returns:
             List of report metadata dicts with report_run_id and date info
@@ -314,10 +364,7 @@ class AdsInsightStream(FacebookSDKStream):
                     self.config.get("report_definition", {}).get("action_attribution_windows_view"),
                     self.config.get("report_definition", {}).get("action_attribution_windows_click"),
                 ],
-                "time_range": {
-                    "since": current_date.to_date_string(),
-                    "until": current_date.to_date_string(),
-                },
+                "time_range": self._get_time_range(current_date),
             }
 
             try:
@@ -344,7 +391,7 @@ class AdsInsightStream(FacebookSDKStream):
                     f"[{self.name}] Error queueing report for {current_date.to_date_string()}: {fb_err.api_error_message()}"
                 )
 
-            current_date = current_date.add(days=time_increment)
+            current_date = self._advance_date(current_date, time_increment)
 
         return batch_reports
 
@@ -489,13 +536,21 @@ class AdsInsightStream(FacebookSDKStream):
         context: dict | None,
     ) -> t.Iterable[dict | tuple[dict, dict | None]]:
         self._initialize_client()
-        time_increment = self.config.get("report_definition", {}).get("time_increment_days")
+        time_increment = self._effective_time_increment
+
+        if self.effective_granularity != "daily":
+            user_logger.info(f"[{self.name}] Using '{self.effective_granularity}' granularity.")
 
         sync_end_date = pendulum.parse(
             self.config.get("end_date", pendulum.today().to_date_string()),
         ).date()
 
         report_date = self._get_start_date(context)
+
+        # For monthly granularity, align start date to the first day of the month
+        if self.effective_granularity == "monthly":
+            report_date = report_date.start_of("month")
+
         columns = self._get_selected_columns()
 
         retry_count = 0
@@ -519,7 +574,7 @@ class AdsInsightStream(FacebookSDKStream):
 
                 if not batch_reports:
                     # No reports created, advance date and continue
-                    report_date = report_date.add(days=time_increment)
+                    report_date = self._advance_date(report_date, time_increment)
                     continue
 
                 # Process all reports in the batch
@@ -528,7 +583,7 @@ class AdsInsightStream(FacebookSDKStream):
 
                 # Successfully processed batch, advance to next batch
                 last_date = batch_reports[-1]["date_obj"]
-                report_date = last_date.add(days=time_increment)
+                report_date = self._advance_date(last_date, time_increment)
                 retry_count = 0  # Reset retry count on success
 
                 # Brief pause between batches to avoid overwhelming API

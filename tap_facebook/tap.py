@@ -211,6 +211,17 @@ class TapFacebook(Tap):
             default="extended",
         ),
         th.Property(
+            "performance_granularity",
+            th.StringType,
+            description=(
+                "Time granularity for insight streams (adsinsights and all breakdown variants). "
+                "Accepted values: daily, monthly. When set to 'monthly', the Facebook API aggregates "
+                "metrics by calendar month. Defaults to 'daily', which preserves the existing behavior "
+                "using the time_increment_days setting from report_definition."
+            ),
+            default="daily",
+        ),
+        th.Property(
             "creative_thumbnail_width",
             th.IntegerType,
             description="The width for creative thumbnails.",
