@@ -56,9 +56,28 @@
             "el_type": "extractor",
             "description": "Allows the selection of breakdown reports, such as gender, country, age and device platform. Should be used with caution since the extraction time can increase significantly."
           },
+          "performance_granularity": {
+            "type": "string",
+            "order": 5,
+            "title": "Insights granularity",
+            "format": "dropdown",
+            "default": "daily",
+            "el_type": "extractor",
+            "description": "Time granularity for all insight streams (adsinsights and breakdown variants). 'Daily' returns one row per day, 'Monthly' aggregates metrics by calendar month for faster extractions on large date ranges.",
+            "allowed_values": [
+              {
+                "label": "Daily",
+                "value": "daily"
+              },
+              {
+                "label": "Monthly",
+                "value": "monthly"
+              }
+            ]
+          },
           "ad_insights_report_batch_size": {
             "type": "integer",
-            "order": 5,
+            "order": 6,
             "title": "Ad Insights batch size",
             "default": 30,
             "el_type": "extractor",
@@ -67,7 +86,7 @@
           },
           "report_definition": {
             "type": "object",
-            "order": 6,
+            "order": 7,
             "format": "parent",
             "el_type": "extractor",
             "required": [
