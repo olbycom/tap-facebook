@@ -24,6 +24,7 @@ from tap_facebook.streams import (
     AdsInsightStream,
     AdsStream,
     AdVideos,
+    CampaignInsightsStream,
     CampaignStream,
     CreativeStream,
     CustomAudiences,
@@ -222,6 +223,16 @@ class TapFacebook(Tap):
             default="daily",
         ),
         th.Property(
+            "enable_campaign_insights",
+            th.BooleanType,
+            default=False,
+            description=(
+                "Enable the campaign_insights stream, which provides insights aggregated "
+                "at the campaign level instead of the ad level. Produces significantly fewer "
+                "rows and faster extractions for accounts with many ads."
+            ),
+        ),
+        th.Property(
             "creative_thumbnail_width",
             th.IntegerType,
             description="The width for creative thumbnails.",
@@ -242,6 +253,9 @@ class TapFacebook(Tap):
             A list of discovered streams.
         """
         streams = [stream_class(tap=self) for stream_class in STREAM_TYPES]
+
+        if self.config.get("enable_campaign_insights", False):
+            streams.append(CampaignInsightsStream(tap=self))
 
         advanced_streams = []
         if self.config.get("enable_advanced_reports", False):

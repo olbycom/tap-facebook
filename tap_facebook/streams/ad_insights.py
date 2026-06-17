@@ -233,6 +233,11 @@ class AdsInsightStream(FacebookSDKStream):
         }
 
     @property
+    def report_level(self) -> str:
+        """Return the aggregation level for the insights report."""
+        return self.config.get("report_definition", {}).get("level", "ad")
+
+    @property
     def report_breakdowns(self) -> list[str] | None:
         return self.config.get("report_definition", {}).get("breakdowns")
 
@@ -353,7 +358,7 @@ class AdsInsightStream(FacebookSDKStream):
                 break
 
             params = {
-                "level": self.config.get("report_definition", {}).get("level"),
+                "level": self.report_level,
                 "action_breakdowns": self.config.get("report_definition", {}).get("action_breakdowns"),
                 "action_report_time": self.config.get("report_definition", {}).get("action_report_time"),
                 "breakdowns": self.report_breakdowns,
@@ -654,3 +659,30 @@ class AdsInsightByHourStream(AdsInsightStream):
     @property
     def report_breakdowns(self) -> list[str] | None:
         return ["region"]
+
+
+class CampaignInsightsStream(AdsInsightStream):
+    """Insights aggregated at the campaign level.
+
+    Unlike the default AdsInsightStream (level=ad), this stream returns one row
+    per campaign per time period, producing significantly fewer rows and faster
+    extractions for accounts with many ads.
+    """
+
+    name = "campaign_insights"
+
+    @property
+    def report_level(self) -> str:
+        return "campaign"
+
+    def _generate_hash_id(self, adinsight: AdsInsights, report_breakdowns: list[str]):
+        date_start = adinsight.get("date_start", "")
+        campaign_id = adinsight.get("campaign_id", "")
+
+        breakdown_values = []
+        for breakdown in report_breakdowns:
+            breakdown_values.append(str(adinsight.get(breakdown, "")))
+        breakdown_string = "-".join(breakdown_values)
+
+        hash_object = md5(f"{date_start}-{campaign_id}-{breakdown_string}".encode())
+        return hash_object.hexdigest()
