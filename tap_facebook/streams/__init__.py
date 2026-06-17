@@ -10,6 +10,7 @@ from tap_facebook.streams.ad_insights import (
     AdsInsightByRegionStream,
     AdsInsightHourlyAdvertiserTimezoneStream,
     AdsInsightStream,
+    CampaignInsightsStream,
 )
 from tap_facebook.streams.ad_labels import AdLabelsStream
 from tap_facebook.streams.ad_videos import AdVideos
@@ -31,6 +32,7 @@ __all__ = [
     "AdsInsightByCountryStream",
     "AdsInsightByDevicePlatformStream",
     "AdsInsightByRegionStream",
+    "CampaignInsightsStream",
     "AdsStream",
     "AdVideos",
     "CampaignStream",
