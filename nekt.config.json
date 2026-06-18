@@ -278,6 +278,26 @@
             ],
             "advanced_settings": true
           },
+          "ads_page_size": {
+            "type": "integer",
+            "order": 13,
+            "title": "Ads page size",
+            "format": "dropdown",
+            "default": 100,
+            "el_type": "extractor",
+            "advanced_settings": true,
+            "description": "Number of ads to fetch per API request. Reduce to 50 if you hit 'Please reduce the amount of data' errors on the ads stream.",
+            "allowed_values": [
+              {
+                "label": "100 (default)",
+                "value": 100
+              },
+              {
+                "label": "50 (recommended for large accounts)",
+                "value": 50
+              }
+            ]
+          },
           "api_version": {
             "type": "string",
             "title": "API version",

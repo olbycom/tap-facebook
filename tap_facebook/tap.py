@@ -244,6 +244,16 @@ class TapFacebook(Tap):
             description="The height for creative thumbnails.",
             default=1024,
         ),
+        th.Property(
+            "ads_page_size",
+            th.IntegerType,
+            description=(
+                "Number of ads to fetch per API request. "
+                "Reduce to 50 if you hit 'Please reduce the amount of data' errors on the ads stream. "
+                "Values below 50 are not supported due to Facebook pagination constraints."
+            ),
+            default=100,
+        ),
     ).to_dict()
 
     def discover_streams(self) -> list[FacebookStream]:
