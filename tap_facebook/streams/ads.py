@@ -258,7 +258,7 @@ class AdsStream(IncrementalFacebookStream):
 
     @property
     def page_size(self) -> int:
-        return self.config.get("ads_page_size", 100)
+        return int(self.config.get("ads_page_size", "100"))
 
     def get_next_page_token(
         self,

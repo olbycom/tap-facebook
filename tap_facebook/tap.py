@@ -246,13 +246,13 @@ class TapFacebook(Tap):
         ),
         th.Property(
             "ads_page_size",
-            th.IntegerType,
+            th.StringType,
             description=(
                 "Number of ads to fetch per API request. "
                 "Reduce to 50 if you hit 'Please reduce the amount of data' errors on the ads stream. "
                 "Values below 50 are not supported due to Facebook pagination constraints."
             ),
-            default=100,
+            default="100",
         ),
     ).to_dict()
 
