@@ -298,6 +298,15 @@
               }
             ]
           },
+          "include_ads_tracking_fields": {
+            "type": "boolean",
+            "order": 14,
+            "title": "Include ads tracking fields",
+            "default": true,
+            "el_type": "extractor",
+            "advanced_settings": true,
+            "description": "Include tracking_specs, conversion_specs and recommendations in the ads stream. Disable for large accounts that hit Facebook error code 1 ('Please reduce the amount of data you're asking for')."
+          },
           "api_version": {
             "type": "string",
             "title": "API version",

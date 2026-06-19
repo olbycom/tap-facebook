@@ -254,6 +254,16 @@ class TapFacebook(Tap):
             ),
             default="100",
         ),
+        th.Property(
+            "include_ads_tracking_fields",
+            th.BooleanType,
+            default=True,
+            description=(
+                "Include tracking_specs, conversion_specs and recommendations in the ads stream. "
+                "Disable for large accounts that hit Facebook error code 1 "
+                "('Please reduce the amount of data you\\'re asking for')."
+            ),
+        ),
     ).to_dict()
 
     def discover_streams(self) -> list[FacebookStream]:

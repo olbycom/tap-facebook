@@ -39,7 +39,7 @@ class AdsStream(IncrementalFacebookStream):
 
     @cached_property
     def path(self) -> str:
-        columns = [
+        base_columns = [
             "id",
             "account_id",
             "adset_id",
@@ -53,13 +53,16 @@ class AdsStream(IncrementalFacebookStream):
             "effective_status",
             "last_updated_by_app_id",
             "source_ad_id",
-            "tracking_specs",
-            "conversion_specs",
-            "recommendations",
             "configured_status",
             "conversion_domain",
             "bid_amount",
         ]
+
+        tracking_fields = []
+        if self.config.get("include_ads_tracking_fields", True):
+            tracking_fields = ["tracking_specs", "conversion_specs", "recommendations"]
+
+        columns = [*base_columns, *tracking_fields]
 
         if "creatives" in self._tap.streams:
             creative_stream: CreativeStream = self._tap.streams["creatives"]
