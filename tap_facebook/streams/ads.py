@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from functools import cached_property
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Dict
+from urllib.parse import parse_qs, urlparse
 
 import requests
+from nekt_singer_sdk.custom_logger import user_logger
 from nekt_singer_sdk.streams.core import REPLICATION_INCREMENTAL
 from nekt_singer_sdk.typing import (
     ArrayType,
@@ -36,8 +38,9 @@ class AdsStream(IncrementalFacebookStream):
 
     name = "ads"
     filter_entity = "ad"
+    _split_tracking_fields: bool = False
 
-    @cached_property
+    @property
     def path(self) -> str:
         base_columns = [
             "id",
@@ -59,7 +62,7 @@ class AdsStream(IncrementalFacebookStream):
         ]
 
         tracking_fields = []
-        if self.config.get("include_ads_tracking_fields", True):
+        if not self._split_tracking_fields and self.config.get("include_ads_tracking_fields", True):
             tracking_fields = ["tracking_specs", "conversion_specs", "recommendations"]
 
         columns = [*base_columns, *tracking_fields]
@@ -262,6 +265,70 @@ class AdsStream(IncrementalFacebookStream):
     @property
     def page_size(self) -> int:
         return int(self.config.get("ads_page_size", "100"))
+
+    def validate_response(self, response: requests.Response) -> None:
+        if response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR:
+            try:
+                error_code = response.json().get("error", {}).get("code")
+                if error_code == 1 and self.config.get("include_ads_tracking_fields", True):
+                    if not self._split_tracking_fields:
+                        user_logger.info(
+                            f"[{self.name}] Facebook error code 1 — switching to split-request mode "
+                            "(fetching tracking fields separately to avoid payload size limit)"
+                        )
+                    self._split_tracking_fields = True
+            except Exception:
+                pass
+        super().validate_response(response)
+
+    def _request(
+        self,
+        prepared_request: requests.PreparedRequest,
+        context: dict | None,
+    ) -> requests.Response:
+        if self._split_tracking_fields:
+            qs = parse_qs(urlparse(prepared_request.url).query)
+            cursor = qs.get("after", [None])[0]
+            new_params = self.get_url_params(context, cursor)
+            prepared_request.prepare_url(self.url_base + self.path, new_params)
+        return super()._request(prepared_request, context)
+
+    def parse_response(self, response: requests.Response) -> Any:
+        if self._split_tracking_fields and response.status_code == HTTPStatus.OK:
+            records = response.json().get("data", [])
+            ad_ids = [r["id"] for r in records if "id" in r]
+            tracking_data = self._fetch_tracking_fields(ad_ids)
+            for record in records:
+                record.update(tracking_data.get(record.get("id"), {}))
+                yield record
+        else:
+            yield from super().parse_response(response)
+
+    def _fetch_tracking_fields(self, ad_ids: list[str]) -> dict[str, dict]:
+        """Batch-fetch tracking_specs, conversion_specs and recommendations for a list of ad IDs.
+
+        Uses the Facebook batch ID lookup endpoint:
+        GET /{version}/?ids=id1,id2,...&fields=tracking_specs,conversion_specs,recommendations
+        Returns a dict keyed by ad ID, or empty dict on failure (ads will have null tracking fields).
+        """
+        if not ad_ids:
+            return {}
+        version = self.config["api_version"]
+        resp = requests.get(
+            f"https://graph.facebook.com/{version}/",
+            params={
+                "ids": ",".join(ad_ids),
+                "fields": "tracking_specs,conversion_specs,recommendations",
+                "access_token": self.config["access_token"],
+            },
+        )
+        if resp.status_code != HTTPStatus.OK:
+            user_logger.warning(
+                f"[{self.name}] Failed to fetch tracking fields for {len(ad_ids)} ads "
+                f"(status {resp.status_code}) — tracking fields will be null for this page"
+            )
+            return {}
+        return resp.json()
 
     def get_next_page_token(
         self,
