@@ -382,8 +382,16 @@ class AdsetsStream(IncrementalFacebookStream):
                     description="Geographic targeting",
                 ),
                 Property("genders", ArrayType(IntegerType), description="Target genders"),
-                Property("brand_safety_content_filter_levels", ArrayType(StringType), description="Brand safety filter levels"),
-                Property("publisher_platforms", ArrayType(StringType), description="Publisher platforms (facebook, instagram, etc.)"),
+                Property(
+                    "brand_safety_content_filter_levels",
+                    ArrayType(StringType),
+                    description="Brand safety filter levels",
+                ),
+                Property(
+                    "publisher_platforms",
+                    ArrayType(StringType),
+                    description="Publisher platforms (facebook, instagram, etc.)",
+                ),
                 Property("facebook_positions", ArrayType(StringType), description="Facebook ad positions"),
                 Property("instagram_positions", ArrayType(StringType), description="Instagram ad positions"),
                 Property("device_platforms", ArrayType(StringType), description="Device platforms"),
@@ -438,19 +446,27 @@ class AdsetsStream(IncrementalFacebookStream):
                             ArrayType(
                                 ObjectType(
                                     Property("address_string", StringType, description="Address string"),
-                                    Property("radius", IntegerType, description="Radius"),
                                     Property("latitude", NumberType, description="Latitude"),
                                     Property("longitude", NumberType, description="Longitude"),
-                                    Property("radius", IntegerType, description="Radius in distance_unit"),
+                                    Property("radius", NumberType, description="Radius in distance_unit"),
                                     Property("distance_unit", StringType, description="Distance unit (e.g. mile, km)"),
                                 )
                             ),
                             description="Excluded custom locations",
                         ),
-                        Property("electoral_district", ArrayType(ObjectType(Property("key", StringType, description="District key"))), description="Excluded electoral districts"),
+                        Property(
+                            "electoral_district",
+                            ArrayType(ObjectType(Property("key", StringType, description="District key"))),
+                            description="Excluded electoral districts",
+                        ),
                         Property(
                             "geo_markets",
-                            ArrayType(ObjectType(Property("key", StringType, description="Market key"), Property("name", StringType, description="Market name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("key", StringType, description="Market key"),
+                                    Property("name", StringType, description="Market name"),
+                                )
+                            ),
                             description="Excluded geo markets",
                         ),
                         Property("location_types", ArrayType(StringType), description="Excluded location types"),
@@ -463,7 +479,7 @@ class AdsetsStream(IncrementalFacebookStream):
                                     Property("latitude", NumberType, description="Latitude"),
                                     Property("longitude", NumberType, description="Longitude"),
                                     Property("name", StringType, description="Place name"),
-                                    Property("radius", IntegerType, description="Radius"),
+                                    Property("radius", NumberType, description="Radius"),
                                     Property("primary_city_id", IntegerType, description="Primary city ID"),
                                     Property("region_id", IntegerType, description="Region ID"),
                                     Property("distance_unit", StringType, description="Distance unit"),
@@ -471,7 +487,11 @@ class AdsetsStream(IncrementalFacebookStream):
                             ),
                             description="Excluded places",
                         ),
-                        Property("regions", ArrayType(ObjectType(Property("key", StringType, description="Region key"))), description="Excluded regions"),
+                        Property(
+                            "regions",
+                            ArrayType(ObjectType(Property("key", StringType, description="Region key"))),
+                            description="Excluded regions",
+                        ),
                         Property(
                             "cities",
                             ArrayType(
@@ -479,73 +499,133 @@ class AdsetsStream(IncrementalFacebookStream):
                                     Property("key", StringType, description="City key"),
                                     Property("country", StringType, description="Country"),
                                     Property("name", StringType, description="City name"),
-                                    Property("radius", IntegerType, description="Radius"),
+                                    Property("radius", NumberType, description="Radius"),
                                     Property("region_id", StringType, description="Region ID"),
                                     Property("distance_unit", StringType, description="Distance unit"),
                                 )
                             ),
                             description="Excluded cities",
                         ),
-                        Property("zips", ArrayType(ObjectType(Property("key", StringType, description="ZIP key"))), description="Excluded ZIP codes"),
+                        Property(
+                            "zips",
+                            ArrayType(ObjectType(Property("key", StringType, description="ZIP key"))),
+                            description="Excluded ZIP codes",
+                        ),
                     ),
                     description="Excluded geographic locations",
                 ),
-                Property("excluded_publisher_categories", ArrayType(StringType), description="Excluded publisher categories"),
-                Property("excluded_publisher_list_ids", ArrayType(StringType), description="Excluded publisher list IDs"),
+                Property(
+                    "excluded_publisher_categories", ArrayType(StringType), description="Excluded publisher categories"
+                ),
+                Property(
+                    "excluded_publisher_list_ids", ArrayType(StringType), description="Excluded publisher list IDs"
+                ),
                 Property("excluded_user_device", ArrayType(StringType), description="Excluded user devices"),
                 Property(
                     "exclusions",
                     ObjectType(
                         Property(
                             "work_employers",
-                            ArrayType(ObjectType(Property("id", StringType, description="Employer ID"), Property("name", StringType, description="Employer name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Employer ID"),
+                                    Property("name", StringType, description="Employer name"),
+                                )
+                            ),
                             description="Excluded work employers",
                         ),
                         Property(
                             "work_positions",
-                            ArrayType(ObjectType(Property("id", StringType, description="Position ID"), Property("name", StringType, description="Position name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Position ID"),
+                                    Property("name", StringType, description="Position name"),
+                                )
+                            ),
                             description="Excluded work positions",
                         ),
                         Property(
                             "income",
-                            ArrayType(ObjectType(Property("id", StringType, description="Income ID"), Property("name", StringType, description="Income name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Income ID"),
+                                    Property("name", StringType, description="Income name"),
+                                )
+                            ),
                             description="Excluded income ranges",
                         ),
                         Property(
                             "industries",
-                            ArrayType(ObjectType(Property("id", StringType, description="Industry ID"), Property("name", StringType, description="Industry name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Industry ID"),
+                                    Property("name", StringType, description="Industry name"),
+                                )
+                            ),
                             description="Excluded industries",
                         ),
                         Property(
                             "interests",
-                            ArrayType(ObjectType(Property("id", StringType, description="Interest ID"), Property("name", StringType, description="Interest name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Interest ID"),
+                                    Property("name", StringType, description="Interest name"),
+                                )
+                            ),
                             description="Excluded interests",
                         ),
                         Property(
                             "life_events",
-                            ArrayType(ObjectType(Property("id", StringType, description="Life event ID"), Property("name", StringType, description="Life event name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Life event ID"),
+                                    Property("name", StringType, description="Life event name"),
+                                )
+                            ),
                             description="Excluded life events",
                         ),
                         Property(
                             "education_majors",
-                            ArrayType(ObjectType(Property("id", StringType, description="Education major ID"), Property("name", StringType, description="Education major name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Education major ID"),
+                                    Property("name", StringType, description="Education major name"),
+                                )
+                            ),
                             description="Excluded education majors",
                         ),
                         Property(
                             "education_schools",
-                            ArrayType(ObjectType(Property("id", StringType, description="School ID"), Property("name", StringType, description="School name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="School ID"),
+                                    Property("name", StringType, description="School name"),
+                                )
+                            ),
                             description="Excluded education schools",
                         ),
-                        Property("education_statuses", ArrayType(IntegerType), description="Excluded education statuses"),
+                        Property(
+                            "education_statuses", ArrayType(IntegerType), description="Excluded education statuses"
+                        ),
                         Property(
                             "family_statuses",
-                            ArrayType(ObjectType(Property("id", StringType, description="Family status ID"), Property("name", StringType, description="Family status name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Family status ID"),
+                                    Property("name", StringType, description="Family status name"),
+                                )
+                            ),
                             description="Excluded family statuses",
                         ),
                         Property("college_years", ArrayType(IntegerType), description="Excluded college years"),
                         Property(
                             "behaviors",
-                            ArrayType(ObjectType(Property("id", StringType, description="Behavior ID"), Property("name", StringType, description="Behavior name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("id", StringType, description="Behavior ID"),
+                                    Property("name", StringType, description="Behavior name"),
+                                )
+                            ),
                             description="Excluded behaviors",
                         ),
                     ),
@@ -562,7 +642,9 @@ class AdsetsStream(IncrementalFacebookStream):
                     description="Family statuses targeting",
                 ),
                 # Property("flexible_spec", ArrayType(ObjectType())), # not enough documentation or examples
-                Property("friends_of_connections", ArrayType(ObjectType()), description="Friends of connections targeting"),
+                Property(
+                    "friends_of_connections", ArrayType(ObjectType()), description="Friends of connections targeting"
+                ),
                 Property(
                     "geo_locations",
                     ObjectType(
@@ -573,19 +655,27 @@ class AdsetsStream(IncrementalFacebookStream):
                             ArrayType(
                                 ObjectType(
                                     Property("address_string", StringType, description="Address string"),
-                                    Property("radius", IntegerType, description="Radius"),
+                                    Property("radius", NumberType, description="Radius"),
                                     Property("latitude", NumberType, description="Latitude"),
                                     Property("longitude", NumberType, description="Longitude"),
-                                    Property("radius", IntegerType, description="Radius in distance_unit"),
                                     Property("distance_unit", StringType, description="Distance unit"),
                                 )
                             ),
                             description="Custom geographic locations",
                         ),
-                        Property("electoral_district", ArrayType(ObjectType(Property("key", StringType, description="District key"))), description="Electoral districts"),
+                        Property(
+                            "electoral_district",
+                            ArrayType(ObjectType(Property("key", StringType, description="District key"))),
+                            description="Electoral districts",
+                        ),
                         Property(
                             "geo_markets",
-                            ArrayType(ObjectType(Property("key", StringType, description="Market key"), Property("name", StringType, description="Market name"))),
+                            ArrayType(
+                                ObjectType(
+                                    Property("key", StringType, description="Market key"),
+                                    Property("name", StringType, description="Market name"),
+                                )
+                            ),
                             description="Geo markets",
                         ),
                         Property("location_types", ArrayType(StringType), description="Location types"),
@@ -598,7 +688,7 @@ class AdsetsStream(IncrementalFacebookStream):
                                     Property("latitude", NumberType, description="Latitude"),
                                     Property("longitude", NumberType, description="Longitude"),
                                     Property("name", StringType, description="Place name"),
-                                    Property("radius", IntegerType, description="Radius"),
+                                    Property("radius", NumberType, description="Radius"),
                                     Property("primary_city_id", IntegerType, description="Primary city ID"),
                                     Property("region_id", IntegerType, description="Region ID"),
                                     Property("distance_unit", StringType, description="Distance unit"),
@@ -606,7 +696,11 @@ class AdsetsStream(IncrementalFacebookStream):
                             ),
                             description="Target places",
                         ),
-                        Property("regions", ArrayType(ObjectType(Property("key", StringType, description="Region key"))), description="Target regions"),
+                        Property(
+                            "regions",
+                            ArrayType(ObjectType(Property("key", StringType, description="Region key"))),
+                            description="Target regions",
+                        ),
                         Property(
                             "cities",
                             ArrayType(
@@ -614,51 +708,87 @@ class AdsetsStream(IncrementalFacebookStream):
                                     Property("key", StringType, description="City key"),
                                     Property("country", StringType, description="Country"),
                                     Property("name", StringType, description="City name"),
-                                    Property("radius", IntegerType, description="Radius"),
+                                    Property("radius", NumberType, description="Radius"),
                                     Property("region_id", StringType, description="Region ID"),
                                     Property("distance_unit", StringType, description="Distance unit"),
                                 )
                             ),
                             description="Target cities",
                         ),
-                        Property("zips", ArrayType(ObjectType(Property("key", StringType, description="ZIP key"))), description="Target ZIP codes"),
+                        Property(
+                            "zips",
+                            ArrayType(ObjectType(Property("key", StringType, description="ZIP key"))),
+                            description="Target ZIP codes",
+                        ),
                     ),
                     description="Geographic targeting (countries, regions, cities, etc.)",
                 ),
                 Property(
                     "income",
-                    ArrayType(ObjectType(Property("id", StringType, description="Income range ID"), Property("name", StringType, description="Income range name"))),
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType, description="Income range ID"),
+                            Property("name", StringType, description="Income range name"),
+                        )
+                    ),
                     description="Income targeting",
                 ),
                 Property(
                     "industries",
-                    ArrayType(ObjectType(Property("id", StringType, description="Industry ID"), Property("name", StringType, description="Industry name"))),
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType, description="Industry ID"),
+                            Property("name", StringType, description="Industry name"),
+                        )
+                    ),
                     description="Industries targeting",
                 ),
                 Property(
                     "interests",
-                    ArrayType(ObjectType(Property("id", StringType, description="Interest ID"), Property("name", StringType, description="Interest name"))),
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType, description="Interest ID"),
+                            Property("name", StringType, description="Interest name"),
+                        )
+                    ),
                     description="Interests targeting",
                 ),
                 Property(
                     "life_events",
-                    ArrayType(ObjectType(Property("id", StringType, description="Life event ID"), Property("name", StringType, description="Life event name"))),
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType, description="Life event ID"),
+                            Property("name", StringType, description="Life event name"),
+                        )
+                    ),
                     description="Life events targeting",
                 ),
                 Property("locales", ArrayType(IntegerType), description="Locales targeting"),
-                Property("relationship_statuses", ArrayType(IntegerType), description="Relationship statuses targeting"),
+                Property(
+                    "relationship_statuses", ArrayType(IntegerType), description="Relationship statuses targeting"
+                ),
                 Property("user_adclusters", ArrayType(ObjectType()), description="User ad clusters"),
                 Property("user_device", ArrayType(StringType), description="User device targeting"),
                 Property("user_os", ArrayType(StringType), description="User OS targeting"),
                 Property("wireless_carrier", ArrayType(StringType), description="Wireless carrier targeting"),
                 Property(
                     "work_employers",
-                    ArrayType(ObjectType(Property("id", StringType, description="Employer ID"), Property("name", StringType, description="Employer name"))),
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType, description="Employer ID"),
+                            Property("name", StringType, description="Employer name"),
+                        )
+                    ),
                     description="Work employers targeting",
                 ),
                 Property(
                     "work_positions",
-                    ArrayType(ObjectType(Property("id", StringType, description="Position ID"), Property("name", StringType, description="Position name"))),
+                    ArrayType(
+                        ObjectType(
+                            Property("id", StringType, description="Position ID"),
+                            Property("name", StringType, description="Position name"),
+                        )
+                    ),
                     description="Work positions targeting",
                 ),
             ),
