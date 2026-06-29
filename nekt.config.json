@@ -307,6 +307,31 @@
             "advanced_settings": true,
             "description": "Include tracking_specs, conversion_specs and recommendations in the ads stream. Disable for large accounts that hit Facebook error code 1 ('Please reduce the amount of data you're asking for')."
           },
+          "include_ad_preview_link": {
+            "type": "boolean",
+            "order": 15,
+            "title": "Include ad preview link",
+            "default": false,
+            "el_type": "extractor",
+            "advanced_settings": true,
+            "description": "Include a shareable preview URL (preview_shareable_link) in the ads stream. The URL points to the official Facebook ad preview page (facebook.com/ads/api/preview_iframe.php?...)."
+          },
+          "preview_ad_format": {
+            "type": "string",
+            "order": 16,
+            "title": "Preview ad format",
+            "format": "dropdown",
+            "default": "DESKTOP_FEED_STANDARD",
+            "el_type": "extractor",
+            "advanced_settings": true,
+            "description": "Ad placement format used to generate the preview link. Only applies when include_ad_preview_link is enabled.",
+            "allowed_values": [
+              {"label": "Desktop Feed", "value": "DESKTOP_FEED_STANDARD"},
+              {"label": "Mobile Feed", "value": "MOBILE_FEED_STANDARD"},
+              {"label": "Instagram Feed", "value": "INSTAGRAM_STANDARD"},
+              {"label": "Instagram Story", "value": "INSTAGRAM_STORY"}
+            ]
+          },
           "api_version": {
             "type": "string",
             "title": "API version",

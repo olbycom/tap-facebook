@@ -67,6 +67,11 @@ class AdsStream(IncrementalFacebookStream):
 
         columns = [*base_columns, *tracking_fields]
 
+        preview_col = ""
+        if self.config.get("include_ad_preview_link", False):
+            ad_format = self.config.get("preview_ad_format", "DESKTOP_FEED_STANDARD")
+            preview_col = f",previews.ad_format({ad_format}){{shareable_link}}"
+
         if "creatives" in self._tap.streams:
             creative_stream: CreativeStream = self._tap.streams["creatives"]
             thumbnail_width = self.config.get("creative_thumbnail_width", 1024)
@@ -74,8 +79,9 @@ class AdsStream(IncrementalFacebookStream):
             return (
                 f"/ads?fields={','.join(columns)},"
                 f"creative.thumbnail_width({thumbnail_width}).thumbnail_height({thumbnail_height}){{{','.join(creative_stream.columns)}}}"
+                f"{preview_col}"
             )
-        return f"/ads?fields={','.join([*columns, 'creative'])}"
+        return f"/ads?fields={','.join([*columns, 'creative'])}{preview_col}"
 
     primary_keys = ["id", "updated_time"]  # noqa: RUF012
     replication_key = "updated_time"
@@ -258,6 +264,11 @@ class AdsStream(IncrementalFacebookStream):
             StringType,
             description="User-configured status of the ad",
         ),
+        Property(
+            "preview_shareable_link",
+            StringType,
+            description="Official Facebook ad preview URL (facebook.com/ads/api/preview_iframe.php?...). Only populated when include_ad_preview_link is enabled.",
+        ),
     ).to_dict()
 
     tap_stream_id = "ads"
@@ -372,4 +383,9 @@ class AdsStream(IncrementalFacebookStream):
         return None
 
     def post_process(self, row: Dict[str, Any], context: Dict | None = None) -> dict | None:
+        previews = row.pop("previews", None)
+        if previews and isinstance(previews, dict):
+            data = previews.get("data", [])
+            if data:
+                row["preview_shareable_link"] = data[0].get("shareable_link")
         return super().post_process(self.sanitize_field_names(row), context)

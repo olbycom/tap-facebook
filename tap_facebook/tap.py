@@ -265,6 +265,25 @@ class TapFacebook(Tap):
             ),
         ),
         th.Property(
+            "include_ad_preview_link",
+            th.BooleanType,
+            default=False,
+            description=(
+                "Include a shareable preview link (preview_shareable_link) in the ads stream. "
+                "Fetched inline via the previews edge — no extra API calls. "
+                "Disabled by default."
+            ),
+        ),
+        th.Property(
+            "preview_ad_format",
+            th.StringType,
+            default="DESKTOP_FEED_STANDARD",
+            description=(
+                "Ad placement format used to generate the preview link. "
+                "Only applies when include_ad_preview_link is enabled."
+            ),
+        ),
+        th.Property(
             "insights_max_wait_to_finish_seconds",
             th.IntegerType,
             default=1800,
