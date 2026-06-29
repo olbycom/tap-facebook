@@ -168,7 +168,7 @@ POLL_JOB_SLEEP_TIME = 5
 AD_REPORT_RETRY_TIME = 2 * 60
 AD_REPORT_INCREMENT_SLEEP_TIME = 1
 INSIGHTS_MAX_WAIT_TO_START_SECONDS = 5 * 60
-INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS = 10 * 60
+DEFAULT_INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS = 30 * 60
 JOB_STALE_ERROR_MESSAGE = (
     "This is an intermittent error and may resolve itself on "
     "subsequent queries to the Facebook API. "
@@ -429,14 +429,15 @@ class AdsInsightStream(FacebookSDKStream):
                         else:
                             user_logger.warning(f"[{self.name}] Unexpected result type for {report_date}")
                 else:
-                    user_logger.warning(f"[{self.name}] Report job failed for {report_date}")
-
-            except Exception as e:
-                user_logger.error(f"[{self.name}] Error processing report for {report_date}: {e}")
+                    raise RuntimeError(
+                        f"[{self.name}] Insights report job failed for {report_date}. "
+                        "Data for this date was not extracted. See logs above for the specific error and how to resolve it."
+                    )
 
     def _run_job_to_completion(self, report_instance: AdReportRun, report_date: str) -> th.Any:
         status = None
         time_start = time.time()
+        max_wait = self.config.get("insights_max_wait_to_finish_seconds", DEFAULT_INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS)
 
         while status != "Job Completed":
             duration = time.time() - time_start
@@ -451,18 +452,19 @@ class AdsInsightStream(FacebookSDKStream):
                 return job
             if status == "Job Failed":
                 user_logger.error(
-                    f"[{self.name}] Insights job {job_id} failed, trying again in a minute." + JOB_STALE_ERROR_MESSAGE
+                    f"[{self.name}] Insights job {job_id} failed for {report_date}. " + JOB_STALE_ERROR_MESSAGE
                 )
                 return
             if duration > INSIGHTS_MAX_WAIT_TO_START_SECONDS and percent_complete == 0:
-                user_logger.warning(
-                    f"[{self.name}] Insights job {job_id} did not start after {duration} seconds."
+                user_logger.error(
+                    f"[{self.name}] Insights job {job_id} did not start after {duration:.0f} seconds for {report_date}. "
                     + JOB_STALE_ERROR_MESSAGE
                 )
                 return
-            if duration > INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS:
-                user_logger.warning(
-                    f"[{self.name}] Insights job {job_id} did not complete after {INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS} seconds"
+            if duration > max_wait:
+                user_logger.error(
+                    f"[{self.name}] Insights job {job_id} did not complete after {max_wait}s for {report_date}. "
+                    f"To fix this, increase 'insights_max_wait_to_finish_seconds' in the tap config (current: {max_wait}s)."
                 )
                 return
 

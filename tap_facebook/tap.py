@@ -264,6 +264,16 @@ class TapFacebook(Tap):
                 "('Please reduce the amount of data you\\'re asking for')."
             ),
         ),
+        th.Property(
+            "insights_max_wait_to_finish_seconds",
+            th.IntegerType,
+            default=1800,
+            description=(
+                "Maximum time in seconds to wait for a Facebook async insights job to complete. "
+                "Increase for large accounts where jobs take longer to process. "
+                "If a job exceeds this limit, the tap raises an error instead of silently skipping the data."
+            ),
+        ),
     ).to_dict()
 
     def discover_streams(self) -> list[FacebookStream]:
