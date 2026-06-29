@@ -415,24 +415,23 @@ class AdsInsightStream(FacebookSDKStream):
             report_run_id = report_info["report_run_id"]
             report_date = report_info["date"]
 
-            try:
-                job = self._run_job_to_completion(
-                    report_instance=AdReportRun(report_run_id),
-                    report_date=report_date,
-                )
+            job = self._run_job_to_completion(
+                report_instance=AdReportRun(report_run_id),
+                report_date=report_date,
+            )
 
-                if isinstance(job, AdReportRun):
-                    for obj in job.get_result():
-                        if isinstance(obj, AdsInsights):
-                            obj["id"] = self._generate_hash_id(adinsight=obj, report_breakdowns=self.report_breakdowns)
-                            yield obj.export_all_data()
-                        else:
-                            user_logger.warning(f"[{self.name}] Unexpected result type for {report_date}")
-                else:
-                    raise RuntimeError(
-                        f"[{self.name}] Insights report job failed for {report_date}. "
-                        "Data for this date was not extracted. See logs above for the specific error and how to resolve it."
-                    )
+            if isinstance(job, AdReportRun):
+                for obj in job.get_result():
+                    if isinstance(obj, AdsInsights):
+                        obj["id"] = self._generate_hash_id(adinsight=obj, report_breakdowns=self.report_breakdowns)
+                        yield obj.export_all_data()
+                    else:
+                        user_logger.warning(f"[{self.name}] Unexpected result type for {report_date}")
+            else:
+                raise RuntimeError(
+                    f"[{self.name}] Insights report job failed for {report_date}. "
+                    "Data for this date was not extracted. See logs above for the specific error and how to resolve it."
+                )
 
     def _run_job_to_completion(self, report_instance: AdReportRun, report_date: str) -> th.Any:
         status = None
