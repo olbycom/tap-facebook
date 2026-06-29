@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Dict
 from urllib.parse import parse_qs, urlparse
@@ -67,11 +69,6 @@ class AdsStream(IncrementalFacebookStream):
 
         columns = [*base_columns, *tracking_fields]
 
-        preview_col = ""
-        if self.config.get("include_ad_preview_link", False):
-            ad_format = self.config.get("preview_ad_format", "DESKTOP_FEED_STANDARD")
-            preview_col = f",previews.ad_format({ad_format}){{shareable_link}}"
-
         if "creatives" in self._tap.streams:
             creative_stream: CreativeStream = self._tap.streams["creatives"]
             thumbnail_width = self.config.get("creative_thumbnail_width", 1024)
@@ -79,9 +76,8 @@ class AdsStream(IncrementalFacebookStream):
             return (
                 f"/ads?fields={','.join(columns)},"
                 f"creative.thumbnail_width({thumbnail_width}).thumbnail_height({thumbnail_height}){{{','.join(creative_stream.columns)}}}"
-                f"{preview_col}"
             )
-        return f"/ads?fields={','.join([*columns, 'creative'])}{preview_col}"
+        return f"/ads?fields={','.join([*columns, 'creative'])}"
 
     primary_keys = ["id", "updated_time"]  # noqa: RUF012
     replication_key = "updated_time"
@@ -305,15 +301,27 @@ class AdsStream(IncrementalFacebookStream):
         return super()._request(prepared_request, context)
 
     def parse_response(self, response: requests.Response) -> Any:
+        include_preview = self.config.get("include_ad_preview_link", False)
         if self._split_tracking_fields and response.status_code == HTTPStatus.OK:
             records = response.json().get("data", [])
             ad_ids = [r["id"] for r in records if "id" in r]
             tracking_data = self._fetch_tracking_fields(ad_ids)
+            preview_data = self._fetch_preview_links(ad_ids) if include_preview else {}
             for record in records:
                 record.update(tracking_data.get(record.get("id"), {}))
+                if include_preview:
+                    record["preview_shareable_link"] = preview_data.get(record.get("id"))
                 yield record
         else:
-            yield from super().parse_response(response)
+            if include_preview:
+                records = list(super().parse_response(response))
+                ad_ids = [r["id"] for r in records if "id" in r]
+                preview_data = self._fetch_preview_links(ad_ids)
+                for record in records:
+                    record["preview_shareable_link"] = preview_data.get(record.get("id"))
+                    yield record
+            else:
+                yield from super().parse_response(response)
 
     def _fetch_tracking_fields(self, ad_ids: list[str]) -> dict[str, dict]:
         """Batch-fetch tracking_specs, conversion_specs and recommendations for a list of ad IDs.
@@ -340,6 +348,47 @@ class AdsStream(IncrementalFacebookStream):
             )
             return {}
         return resp.json()
+
+    def _fetch_preview_links(self, ad_ids: list[str]) -> dict[str, str | None]:
+        """Batch-fetch preview URLs for a list of ad IDs via the Facebook Batch API.
+
+        Calls /{ad_id}/previews?ad_format=FORMAT for each ad in chunks of 50,
+        then extracts the preview URL from the src attribute of the iframe body.
+        Returns a dict keyed by ad ID (value is None if no preview is available).
+        """
+        if not ad_ids:
+            return {}
+        ad_format = self.config.get("preview_ad_format", "DESKTOP_FEED_STANDARD")
+        version = self.config["api_version"]
+        result: dict[str, str | None] = {}
+        for chunk in [ad_ids[i : i + 50] for i in range(0, len(ad_ids), 50)]:
+            batch = [
+                {"method": "GET", "relative_url": f"{ad_id}/previews?ad_format={ad_format}"}
+                for ad_id in chunk
+            ]
+            resp = requests.post(
+                f"https://graph.facebook.com/{version}/",
+                data={"batch": json.dumps(batch), "access_token": self.config["access_token"]},
+            )
+            if resp.status_code != HTTPStatus.OK:
+                user_logger.warning(
+                    f"[{self.name}] Failed to fetch preview links (status {resp.status_code}) "
+                    "— preview_shareable_link will be null for this page"
+                )
+                continue
+            for ad_id, batch_item in zip(chunk, resp.json()):
+                if not batch_item or batch_item.get("code") != 200:
+                    result[ad_id] = None
+                    continue
+                body_json = json.loads(batch_item["body"])
+                data = body_json.get("data", [])
+                if not data:
+                    result[ad_id] = None
+                    continue
+                iframe_body = data[0].get("body", "")
+                match = re.search(r'src="([^"]+)"', iframe_body)
+                result[ad_id] = match.group(1).replace("&amp;", "&") if match else None
+        return result
 
     def get_next_page_token(
         self,
@@ -383,9 +432,4 @@ class AdsStream(IncrementalFacebookStream):
         return None
 
     def post_process(self, row: Dict[str, Any], context: Dict | None = None) -> dict | None:
-        previews = row.pop("previews", None)
-        if previews and isinstance(previews, dict):
-            data = previews.get("data", [])
-            if data:
-                row["preview_shareable_link"] = data[0].get("shareable_link")
         return super().post_process(self.sanitize_field_names(row), context)
