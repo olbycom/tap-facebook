@@ -458,7 +458,6 @@ class AdsInsightStream(FacebookSDKStream):
             report_date = report_info["date"]
             date_obj = report_info["date_obj"]
 
-            job = None
             for attempt in range(max_retries + 1):
                 if attempt > 0:
                     user_logger.info(
@@ -473,16 +472,23 @@ class AdsInsightStream(FacebookSDKStream):
                     report_instance=AdReportRun(report_run_id),
                     report_date=report_date,
                 )
-                if isinstance(job, AdReportRun):
-                    break
+                if not isinstance(job, AdReportRun):
+                    continue
 
-            if isinstance(job, AdReportRun):
-                for obj in job.get_result():
-                    if isinstance(obj, AdsInsights):
-                        obj["id"] = self._generate_hash_id(adinsight=obj, report_breakdowns=self.report_breakdowns)
-                        yield obj.export_all_data()
-                    else:
-                        user_logger.warning(f"[{self.name}] Unexpected result type for {report_date}")
+                try:
+                    records = []
+                    for obj in job.get_result():
+                        if isinstance(obj, AdsInsights):
+                            obj["id"] = self._generate_hash_id(adinsight=obj, report_breakdowns=self.report_breakdowns)
+                            records.append(obj.export_all_data())
+                        else:
+                            user_logger.warning(f"[{self.name}] Unexpected result type for {report_date}")
+                    yield from records
+                    break
+                except Exception as e:
+                    user_logger.warning(
+                        f"[{self.name}] Error reading results for {report_date} (attempt {attempt}/{max_retries}): {e}. Retrying..."
+                    )
             else:
                 msg = (
                     f"[{self.name}] Insights report job failed for {report_date} after {max_retries} retries. "
