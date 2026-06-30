@@ -293,6 +293,15 @@ class TapFacebook(Tap):
                 "If a job exceeds this limit, the tap raises an error instead of silently skipping the data."
             ),
         ),
+        th.Property(
+            "fail_on_job_error",
+            th.BooleanType,
+            default=False,
+            description=(
+                "If true, raises an error when an insights job fails after all retries, stopping the pipeline. "
+                "If false (default), logs the error and skips the date, allowing the pipeline to continue."
+            ),
+        ),
     ).to_dict()
 
     def discover_streams(self) -> list[FacebookStream]:

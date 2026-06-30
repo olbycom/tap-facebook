@@ -400,25 +400,81 @@ class AdsInsightStream(FacebookSDKStream):
 
         return batch_reports
 
-    def _process_report_batch(self, batch_reports: list[dict]) -> t.Iterator[dict]:
+    def _create_single_report(
+        self,
+        date: pendulum.Date,
+        columns: list[str],
+        time_increment: int | str,
+    ) -> str | None:
+        """Create a single async report job. Returns report_run_id or None on failure."""
+        params = {
+            "level": self.report_level,
+            "action_breakdowns": self.config.get("report_definition", {}).get("action_breakdowns"),
+            "action_report_time": self.config.get("report_definition", {}).get("action_report_time"),
+            "breakdowns": self.report_breakdowns,
+            "fields": columns,
+            "time_increment": time_increment,
+            "limit": 100,
+            "action_attribution_windows": [
+                self.config.get("report_definition", {}).get("action_attribution_windows_view"),
+                self.config.get("report_definition", {}).get("action_attribution_windows_click"),
+            ],
+            "time_range": self._get_time_range(date),
+        }
+        try:
+            response = self._trigger_async_insight_report_creation(
+                params=params, account_id=self.config["account_id"]
+            )
+            self._check_facebook_api_usage(headers=response._headers)
+            if response.status() == HTTPStatus.OK:
+                return response.json()["report_run_id"]
+            user_logger.warning(f"[{self.name}] Failed to queue retry report for {date}")
+        except FacebookRequestError as fb_err:
+            user_logger.warning(f"[{self.name}] Error queueing retry report for {date}: {fb_err.api_error_message()}")
+        return None
+
+    def _process_report_batch(
+        self,
+        batch_reports: list[dict],
+        columns: list[str],
+        time_increment: int | str,
+    ) -> t.Iterator[dict]:
         """Process a batch of reports, waiting for all to complete and yielding results.
 
         Args:
             batch_reports: List of report metadata from _create_report_batch
+            columns: Report columns (used when retrying failed jobs)
+            time_increment: Days per report (used when retrying failed jobs)
 
         Yields:
             Individual insight records
         """
         user_logger.info(f"[{self.name}] Processing batch of {len(batch_reports)} reports...")
+        fail_on_error = self.config.get("fail_on_job_error", False)
+        max_retries = 10
 
         for report_info in batch_reports:
             report_run_id = report_info["report_run_id"]
             report_date = report_info["date"]
+            date_obj = report_info["date_obj"]
 
-            job = self._run_job_to_completion(
-                report_instance=AdReportRun(report_run_id),
-                report_date=report_date,
-            )
+            job = None
+            for attempt in range(max_retries + 1):
+                if attempt > 0:
+                    user_logger.info(
+                        f"[{self.name}] Retrying job for {report_date} (attempt {attempt}/{max_retries}), waiting 60s..."
+                    )
+                    time.sleep(60)
+                    report_run_id = self._create_single_report(date_obj, columns, time_increment)
+                    if not report_run_id:
+                        continue
+
+                job = self._run_job_to_completion(
+                    report_instance=AdReportRun(report_run_id),
+                    report_date=report_date,
+                )
+                if isinstance(job, AdReportRun):
+                    break
 
             if isinstance(job, AdReportRun):
                 for obj in job.get_result():
@@ -428,10 +484,15 @@ class AdsInsightStream(FacebookSDKStream):
                     else:
                         user_logger.warning(f"[{self.name}] Unexpected result type for {report_date}")
             else:
-                raise RuntimeError(
-                    f"[{self.name}] Insights report job failed for {report_date}. "
-                    "Data for this date was not extracted. See logs above for the specific error and how to resolve it."
+                msg = (
+                    f"[{self.name}] Insights report job failed for {report_date} after {max_retries} retries. "
+                    "Data for this date was not extracted. See logs above for the specific error."
                 )
+                if fail_on_error:
+                    user_logger.error(msg)
+                    sys.exit(1)
+                else:
+                    user_logger.error(msg)
 
     def _run_job_to_completion(self, report_instance: AdReportRun, report_date: str) -> th.Any:
         status = None
@@ -584,7 +645,7 @@ class AdsInsightStream(FacebookSDKStream):
                     continue
 
                 # Process all reports in the batch
-                for record in self._process_report_batch(batch_reports):
+                for record in self._process_report_batch(batch_reports, columns, time_increment):
                     yield record
 
                 # Successfully processed batch, advance to next batch
