@@ -41,6 +41,7 @@ class AdsStream(IncrementalFacebookStream):
     name = "ads"
     filter_entity = "ad"
     _split_tracking_fields: bool = False
+    _split_creative_fields: bool = False
 
     @property
     def path(self) -> str:
@@ -69,7 +70,7 @@ class AdsStream(IncrementalFacebookStream):
 
         columns = [*base_columns, *tracking_fields]
 
-        if "creatives" in self._tap.streams:
+        if "creatives" in self._tap.streams and not self._split_creative_fields:
             creative_stream: CreativeStream = self._tap.streams["creatives"]
             thumbnail_width = self.config.get("creative_thumbnail_width", 1024)
             thumbnail_height = self.config.get("creative_thumbnail_height", 1024)
@@ -77,6 +78,9 @@ class AdsStream(IncrementalFacebookStream):
                 f"/ads?fields={','.join(columns)},"
                 f"creative.thumbnail_width({thumbnail_width}).thumbnail_height({thumbnail_height}){{{','.join(creative_stream.columns)}}}"
             )
+        # Either no creatives stream selected, or _split_creative_fields is active:
+        # request only the creative id here and fetch full fields separately
+        # (see _fetch_creative_fields) to keep the /ads payload small.
         return f"/ads?fields={','.join([*columns, 'creative'])}"
 
     primary_keys = ["id", "updated_time"]  # noqa: RUF012
@@ -277,13 +281,33 @@ class AdsStream(IncrementalFacebookStream):
         if response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR:
             try:
                 error_code = response.json().get("error", {}).get("code")
-                if error_code == 1 and self.config.get("include_ads_tracking_fields", True):
-                    if not self._split_tracking_fields:
+                include_tracking = self.config.get("include_ads_tracking_fields", True)
+                if error_code == 1:
+                    if include_tracking and not self._split_tracking_fields:
+                        # First degradation step: tracking fields are the usual
+                        # culprit and cheapest to drop, so try that first.
+                        self._split_tracking_fields = True
                         user_logger.info(
-                            f"[{self.name}] Facebook error code 1 — switching to split-request mode "
-                            "(fetching tracking fields separately to avoid payload size limit)"
+                            f"[{self.name}] Facebook error code 1 — switching to "
+                            "split-request mode (fetching tracking fields "
+                            "separately to avoid payload size limit)"
                         )
-                    self._split_tracking_fields = True
+                    elif (
+                        self.config.get("split_creative_on_error", True)
+                        and "creatives" in self._tap.streams
+                        and not self._split_creative_fields
+                    ):
+                        # Tracking fields are already excluded (by config or by
+                        # the step above) and the error persists: the remaining
+                        # payload weight is the inline creative expansion, so
+                        # split that out too.
+                        self._split_creative_fields = True
+                        user_logger.info(
+                            f"[{self.name}] Facebook error code 1 persists — "
+                            "switching to split-request mode for creative "
+                            "fields as well (fetching creative details "
+                            "separately)"
+                        )
             except Exception:
                 pass
         super().validate_response(response)
@@ -293,7 +317,7 @@ class AdsStream(IncrementalFacebookStream):
         prepared_request: requests.PreparedRequest,
         context: dict | None,
     ) -> requests.Response:
-        if self._split_tracking_fields:
+        if self._split_tracking_fields or self._split_creative_fields:
             qs = parse_qs(urlparse(prepared_request.url).query)
             cursor = qs.get("after", [None])[0]
             new_params = self.get_url_params(context, cursor)
@@ -302,15 +326,24 @@ class AdsStream(IncrementalFacebookStream):
 
     def parse_response(self, response: requests.Response) -> Any:
         include_preview = self.config.get("include_ad_preview_link", False)
-        if self._split_tracking_fields and response.status_code == HTTPStatus.OK:
+        split_active = self._split_tracking_fields or self._split_creative_fields
+        if split_active and response.status_code == HTTPStatus.OK:
             records = response.json().get("data", [])
             ad_ids = [r["id"] for r in records if "id" in r]
-            tracking_data = self._fetch_tracking_fields(ad_ids)
+            tracking_data = {}
+            if self._split_tracking_fields:
+                tracking_data = self._fetch_tracking_fields(ad_ids)
+            creative_data = {}
+            if self._split_creative_fields:
+                creative_data = self._fetch_creative_fields(records)
             preview_data = self._fetch_preview_links(ad_ids) if include_preview else {}
             for record in records:
-                record.update(tracking_data.get(record.get("id"), {}))
+                ad_id = record.get("id")
+                record.update(tracking_data.get(ad_id, {}))
+                if ad_id in creative_data:
+                    record["creative"] = creative_data[ad_id]
                 if include_preview:
-                    record["preview_shareable_link"] = preview_data.get(record.get("id"))
+                    record["preview_shareable_link"] = preview_data.get(ad_id)
                 yield record
         else:
             if include_preview:
@@ -324,30 +357,99 @@ class AdsStream(IncrementalFacebookStream):
                 yield from super().parse_response(response)
 
     def _fetch_tracking_fields(self, ad_ids: list[str]) -> dict[str, dict]:
-        """Batch-fetch tracking_specs, conversion_specs and recommendations for a list of ad IDs.
+        """Batch-fetch tracking_specs, conversion_specs and recommendations for ad IDs.
 
-        Uses the Facebook batch ID lookup endpoint:
+        Uses the Facebook batch ID lookup endpoint, chunked to 50 ids per call
+        (the endpoint's limit):
         GET /{version}/?ids=id1,id2,...&fields=tracking_specs,conversion_specs,recommendations
-        Returns a dict keyed by ad ID, or empty dict on failure (ads will have null tracking fields).
+        Returns a dict keyed by ad ID. Ads whose chunk failed are simply absent
+        from the result (tracking fields will be null for those rows on this page).
         """
         if not ad_ids:
             return {}
         version = self.config["api_version"]
-        resp = requests.get(
-            f"https://graph.facebook.com/{version}/",
-            params={
-                "ids": ",".join(ad_ids),
-                "fields": "tracking_specs,conversion_specs,recommendations",
-                "access_token": self.config["access_token"],
-            },
-        )
-        if resp.status_code != HTTPStatus.OK:
-            user_logger.warning(
-                f"[{self.name}] Failed to fetch tracking fields for {len(ad_ids)} ads "
-                f"(status {resp.status_code}) — tracking fields will be null for this page"
+        result: dict[str, dict] = {}
+        for chunk in [ad_ids[i : i + 50] for i in range(0, len(ad_ids), 50)]:
+            resp = requests.get(
+                f"https://graph.facebook.com/{version}/",
+                params={
+                    "ids": ",".join(chunk),
+                    "fields": "tracking_specs,conversion_specs,recommendations",
+                    "access_token": self.config["access_token"],
+                },
             )
+            if resp.status_code != HTTPStatus.OK:
+                user_logger.warning(
+                    f"[{self.name}] Failed to fetch tracking fields for "
+                    f"{len(chunk)} ads (status {resp.status_code}) — tracking "
+                    "fields will be null for this chunk"
+                )
+                continue
+            result.update(resp.json())
+        return result
+
+    def _fetch_creative_fields(self, records: list[dict]) -> dict[str, dict]:
+        """Batch-fetch full creative field data for a page of split-creative ads.
+
+        When `_split_creative_fields` is active, `path` only requests the bare
+        `creative` field on each ad, so each record's `creative` is just
+        `{"id": ...}`. This fetches the full set of creative columns (matching
+        what `creatives` stream needs, based on `creative_fields_mode`) via the
+        Facebook batch ID lookup endpoint, keyed by creative ID, chunked to 50
+        ids per call, then remaps the result back to ad ID so callers can
+        replace `record["creative"]` with the complete object — matching what
+        the inline expansion used to return, so `get_child_context` keeps
+        feeding `creatives` the same data as before.
+
+        Returns a dict keyed by ad ID. Ads whose creative could not be fetched
+        are simply absent from the result (callers should keep the bare
+        {"id": ...} in that case).
+        """
+        creative_id_by_ad: dict[str, str] = {}
+        for record in records:
+            creative = record.get("creative")
+            if isinstance(creative, dict) and creative.get("id") and record.get("id"):
+                creative_id_by_ad[record["id"]] = creative["id"]
+        if not creative_id_by_ad:
             return {}
-        return resp.json()
+
+        columns: list[str] = []
+        if "creatives" in self._tap.streams:
+            creative_stream: CreativeStream = self._tap.streams["creatives"]
+            columns = creative_stream.columns
+        fields = ",".join([*columns, "id"])
+        thumbnail_width = self.config.get("creative_thumbnail_width", 1024)
+        thumbnail_height = self.config.get("creative_thumbnail_height", 1024)
+        version = self.config["api_version"]
+
+        creative_ids = list(dict.fromkeys(creative_id_by_ad.values()))
+        id_chunks = [creative_ids[i : i + 50] for i in range(0, len(creative_ids), 50)]
+        creatives_by_id: dict[str, dict] = {}
+        for chunk in id_chunks:
+            resp = requests.get(
+                f"https://graph.facebook.com/{version}/",
+                params={
+                    "ids": ",".join(chunk),
+                    "fields": fields,
+                    "thumbnail_width": thumbnail_width,
+                    "thumbnail_height": thumbnail_height,
+                    "access_token": self.config["access_token"],
+                },
+            )
+            if resp.status_code != HTTPStatus.OK:
+                user_logger.warning(
+                    f"[{self.name}] Failed to fetch creative fields for "
+                    f"{len(chunk)} creatives (status {resp.status_code}) — "
+                    "creative fields will be incomplete for this chunk"
+                )
+                continue
+            creatives_by_id.update(resp.json())
+
+        return {
+            ad_id: creatives_by_id[creative_id]
+            for ad_id, creative_id in creative_id_by_ad.items()
+            if creative_id in creatives_by_id
+        }
 
     def _fetch_preview_links(self, ad_ids: list[str]) -> dict[str, str | None]:
         """Batch-fetch preview URLs for a list of ad IDs via the Facebook Batch API.

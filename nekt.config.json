@@ -307,9 +307,18 @@
             "advanced_settings": true,
             "description": "Include tracking_specs, conversion_specs and recommendations in the ads stream. Disable for large accounts that hit Facebook error code 1 ('Please reduce the amount of data you're asking for')."
           },
-          "include_ad_preview_link": {
+          "split_creative_on_error": {
             "type": "boolean",
             "order": 15,
+            "title": "Split creative fields on payload-size error",
+            "default": true,
+            "el_type": "extractor",
+            "advanced_settings": true,
+            "description": "If the ads stream still hits Facebook error code 1 ('Please reduce the amount of data you're asking for') after tracking fields are excluded, fetch creative fields in a separate batched request instead of inline. Disable to fall back to the previous behavior for this source."
+          },
+          "include_ad_preview_link": {
+            "type": "boolean",
+            "order": 16,
             "title": "Include ad preview link",
             "default": false,
             "el_type": "extractor",
@@ -318,7 +327,7 @@
           },
           "preview_ad_format": {
             "type": "string",
-            "order": 16,
+            "order": 17,
             "title": "Preview ad format",
             "format": "dropdown",
             "default": "DESKTOP_FEED_STANDARD",
