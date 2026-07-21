@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Dict
 from urllib.parse import parse_qs, urlparse
@@ -356,6 +357,63 @@ class AdsStream(IncrementalFacebookStream):
             else:
                 yield from super().parse_response(response)
 
+    _GRAPH_HELPER_MAX_ATTEMPTS = 3
+    _GRAPH_HELPER_TIMEOUT = 60
+
+    def _redact_token(self, text: str) -> str:
+        """Strip the access token from text destined for logs."""
+        token = self.config.get("access_token")
+        if token:
+            text = text.replace(token, "***")
+        return re.sub(r"access_token=[^&\s\"']+", "access_token=***", text)
+
+    def _redacted_response_body(self, response: requests.Response, limit: int = 500) -> str:
+        """Return the response body redacted and truncated for logging."""
+        body = self._redact_token(response.text or "")
+        return body[:limit] + ("…" if len(body) > limit else "")
+
+    def _graph_batch_request(
+        self,
+        method: str,
+        *,
+        params: dict | None = None,
+        data: dict | None = None,
+        label: str,
+    ) -> requests.Response | None:
+        """Call the Graph API root endpoint with timeout and network-error retries.
+
+        The split-request helpers run outside the SDK request machinery, so
+        connection errors here would otherwise crash the whole sync. Retries
+        with exponential backoff and returns None once attempts are exhausted,
+        letting callers skip the chunk instead of failing the run.
+        """
+        version = self.config["api_version"]
+        url = f"https://graph.facebook.com/{version}/"
+        for attempt in range(1, self._GRAPH_HELPER_MAX_ATTEMPTS + 1):
+            try:
+                return requests.request(
+                    method,
+                    url,
+                    params=params,
+                    data=data,
+                    timeout=self._GRAPH_HELPER_TIMEOUT,
+                )
+            except requests.exceptions.RequestException as exc:
+                error = self._redact_token(f"{type(exc).__name__}: {exc}")
+                if attempt == self._GRAPH_HELPER_MAX_ATTEMPTS:
+                    user_logger.warning(
+                        f"[{self.name}] {label}: request failed after "
+                        f"{attempt} attempts ({error}) — skipping this chunk"
+                    )
+                    return None
+                wait = 2**attempt
+                user_logger.warning(
+                    f"[{self.name}] {label}: request error ({error}) — "
+                    f"retrying in {wait}s (attempt {attempt}/{self._GRAPH_HELPER_MAX_ATTEMPTS})"
+                )
+                time.sleep(wait)
+        return None
+
     def _fetch_tracking_fields(self, ad_ids: list[str]) -> dict[str, dict]:
         """Batch-fetch tracking_specs, conversion_specs and recommendations for ad IDs.
 
@@ -367,22 +425,25 @@ class AdsStream(IncrementalFacebookStream):
         """
         if not ad_ids:
             return {}
-        version = self.config["api_version"]
         result: dict[str, dict] = {}
         for chunk in [ad_ids[i : i + 50] for i in range(0, len(ad_ids), 50)]:
-            resp = requests.get(
-                f"https://graph.facebook.com/{version}/",
+            resp = self._graph_batch_request(
+                "get",
                 params={
                     "ids": ",".join(chunk),
                     "fields": "tracking_specs,conversion_specs,recommendations",
                     "access_token": self.config["access_token"],
                 },
+                label="tracking fields",
             )
+            if resp is None:
+                continue
             if resp.status_code != HTTPStatus.OK:
                 user_logger.warning(
                     f"[{self.name}] Failed to fetch tracking fields for "
                     f"{len(chunk)} ads (status {resp.status_code}) — tracking "
-                    "fields will be null for this chunk"
+                    "fields will be null for this chunk. "
+                    f"Response: {self._redacted_response_body(resp)}"
                 )
                 continue
             result.update(resp.json())
@@ -420,14 +481,13 @@ class AdsStream(IncrementalFacebookStream):
         fields = ",".join([*columns, "id"])
         thumbnail_width = self.config.get("creative_thumbnail_width", 1024)
         thumbnail_height = self.config.get("creative_thumbnail_height", 1024)
-        version = self.config["api_version"]
 
         creative_ids = list(dict.fromkeys(creative_id_by_ad.values()))
         id_chunks = [creative_ids[i : i + 50] for i in range(0, len(creative_ids), 50)]
         creatives_by_id: dict[str, dict] = {}
         for chunk in id_chunks:
-            resp = requests.get(
-                f"https://graph.facebook.com/{version}/",
+            resp = self._graph_batch_request(
+                "get",
                 params={
                     "ids": ",".join(chunk),
                     "fields": fields,
@@ -435,12 +495,16 @@ class AdsStream(IncrementalFacebookStream):
                     "thumbnail_height": thumbnail_height,
                     "access_token": self.config["access_token"],
                 },
+                label="creative fields",
             )
+            if resp is None:
+                continue
             if resp.status_code != HTTPStatus.OK:
                 user_logger.warning(
                     f"[{self.name}] Failed to fetch creative fields for "
                     f"{len(chunk)} creatives (status {resp.status_code}) — "
-                    "creative fields will be incomplete for this chunk"
+                    "creative fields will be incomplete for this chunk. "
+                    f"Response: {self._redacted_response_body(resp)}"
                 )
                 continue
             creatives_by_id.update(resp.json())
@@ -461,21 +525,26 @@ class AdsStream(IncrementalFacebookStream):
         if not ad_ids:
             return {}
         ad_format = self.config.get("preview_ad_format", "DESKTOP_FEED_STANDARD")
-        version = self.config["api_version"]
         result: dict[str, str | None] = {}
         for chunk in [ad_ids[i : i + 50] for i in range(0, len(ad_ids), 50)]:
             batch = [
                 {"method": "GET", "relative_url": f"{ad_id}/previews?ad_format={ad_format}"}
                 for ad_id in chunk
             ]
-            resp = requests.post(
-                f"https://graph.facebook.com/{version}/",
+            resp = self._graph_batch_request(
+                "post",
                 data={"batch": json.dumps(batch), "access_token": self.config["access_token"]},
+                label="preview links",
             )
+            if resp is None:
+                for ad_id in chunk:
+                    result[ad_id] = None
+                continue
             if resp.status_code != HTTPStatus.OK:
                 user_logger.warning(
                     f"[{self.name}] Failed to fetch preview links (status {resp.status_code}) "
-                    "— preview_shareable_link will be null for this page"
+                    "— preview_shareable_link will be null for this page. "
+                    f"Response: {self._redacted_response_body(resp)}"
                 )
                 continue
             for ad_id, batch_item in zip(chunk, resp.json()):
