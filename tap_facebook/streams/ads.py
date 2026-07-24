@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Dict
@@ -11,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 from nekt_singer_sdk.custom_logger import user_logger
-from nekt_singer_sdk.streams.core import REPLICATION_INCREMENTAL
+from nekt_singer_sdk.exceptions import RetriableAPIError
 from nekt_singer_sdk.typing import (
     ArrayType,
     DateTimeType,
@@ -27,6 +28,33 @@ from tap_facebook.client import IncrementalFacebookStream
 if TYPE_CHECKING:
     from tap_facebook.streams.creative import CreativeStream
 
+# Fields requested inline on /ads. Tracking fields and the creative expansion
+# are layered on top of these depending on the degradation state.
+BASE_AD_COLUMNS = [
+    "id",
+    "account_id",
+    "adset_id",
+    "campaign_id",
+    "bid_type",
+    "bid_info",
+    "status",
+    "updated_time",
+    "created_time",
+    "name",
+    "effective_status",
+    "last_updated_by_app_id",
+    "source_ad_id",
+    "configured_status",
+    "conversion_domain",
+    "bid_amount",
+]
+
+# Facebook cursor pagination is unreliable below 50 (paging.next may be absent
+# or loop), so the automatic ladder never reduces the page size further.
+MIN_ADS_PAGE_SIZE = 50
+
+DEGRADATION_RETRY_SLEEP_SECONDS = 5
+
 
 class AdsStream(IncrementalFacebookStream):
     """Ads stream class.
@@ -41,35 +69,29 @@ class AdsStream(IncrementalFacebookStream):
 
     name = "ads"
     filter_entity = "ad"
+
+    # Degradation ladder state. Reset at the start of every run — each run
+    # starts optimistic and descends only as far as Facebook's error code 1
+    # ("Please reduce the amount of data you're asking for") forces it to.
     _split_tracking_fields: bool = False
     _split_creative_fields: bool = False
+    _reduced_page_size: int | None = None
+    _two_phase_mode: bool = False
+    _last_error_code: int | None = None
 
     @property
     def path(self) -> str:
-        base_columns = [
-            "id",
-            "account_id",
-            "adset_id",
-            "campaign_id",
-            "bid_type",
-            "bid_info",
-            "status",
-            "updated_time",
-            "created_time",
-            "name",
-            "effective_status",
-            "last_updated_by_app_id",
-            "source_ad_id",
-            "configured_status",
-            "conversion_domain",
-            "bid_amount",
-        ]
+        if self._two_phase_mode:
+            # Ultra-minimal listing: only the id and the replication key. All
+            # remaining fields are batch-fetched by id in parse_response (see
+            # _fetch_base_fields).
+            return "/ads?fields=id,updated_time"
 
         tracking_fields = []
         if not self._split_tracking_fields and self.config.get("include_ads_tracking_fields", True):
             tracking_fields = ["tracking_specs", "conversion_specs", "recommendations"]
 
-        columns = [*base_columns, *tracking_fields]
+        columns = [*BASE_AD_COLUMNS, *tracking_fields]
 
         if "creatives" in self._tap.streams and not self._split_creative_fields:
             creative_stream: CreativeStream = self._tap.streams["creatives"]
@@ -276,86 +298,160 @@ class AdsStream(IncrementalFacebookStream):
 
     @property
     def page_size(self) -> int:
+        if self._reduced_page_size is not None:
+            return self._reduced_page_size
         return int(self.config.get("ads_page_size", "100"))
 
+    @property
+    def _degradation_active(self) -> bool:
+        return (
+            self._split_tracking_fields
+            or self._split_creative_fields
+            or self._reduced_page_size is not None
+            or self._two_phase_mode
+        )
+
     def validate_response(self, response: requests.Response) -> None:
+        # Record the Facebook error code so _request can drive the degradation
+        # ladder when the retriable error surfaces.
+        self._last_error_code = None
         if response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR:
             try:
-                error_code = response.json().get("error", {}).get("code")
-                include_tracking = self.config.get("include_ads_tracking_fields", True)
-                if error_code == 1:
-                    if include_tracking and not self._split_tracking_fields:
-                        # First degradation step: tracking fields are the usual
-                        # culprit and cheapest to drop, so try that first.
-                        self._split_tracking_fields = True
-                        user_logger.info(
-                            f"[{self.name}] Facebook error code 1 — switching to "
-                            "split-request mode (fetching tracking fields "
-                            "separately to avoid payload size limit)"
-                        )
-                    elif (
-                        self.config.get("split_creative_on_error", True)
-                        and "creatives" in self._tap.streams
-                        and not self._split_creative_fields
-                    ):
-                        # Tracking fields are already excluded (by config or by
-                        # the step above) and the error persists: the remaining
-                        # payload weight is the inline creative expansion, so
-                        # split that out too.
-                        self._split_creative_fields = True
-                        user_logger.info(
-                            f"[{self.name}] Facebook error code 1 persists — "
-                            "switching to split-request mode for creative "
-                            "fields as well (fetching creative details "
-                            "separately)"
-                        )
+                self._last_error_code = response.json().get("error", {}).get("code")
             except Exception:
-                pass
+                self._last_error_code = None
         super().validate_response(response)
+
+    def _advance_degradation(self) -> bool:
+        """Activate the next rung of the degradation ladder.
+
+        Called when Facebook keeps answering error code 1 ('Please reduce the
+        amount of data you're asking for') on /ads. Each rung shrinks the
+        request further. Returns False once every applicable rung is already
+        active, letting the caller fall back to the regular backoff retries.
+        """
+        if not self._split_tracking_fields and self.config.get("include_ads_tracking_fields", True):
+            # First rung: tracking fields are the usual culprit and cheapest
+            # to drop, so try that first.
+            self._split_tracking_fields = True
+            user_logger.info(
+                f"[{self.name}] Facebook error code 1 — switching to "
+                "split-request mode (fetching tracking fields "
+                "separately to avoid payload size limit)"
+            )
+            return True
+        if (
+            not self._split_creative_fields
+            and self.config.get("split_creative_on_error", True)
+            and "creatives" in self._tap.streams
+        ):
+            # Tracking fields are already excluded (by config or by the rung
+            # above) and the error persists: the remaining payload weight is
+            # the inline creative expansion, so split that out too.
+            self._split_creative_fields = True
+            user_logger.info(
+                f"[{self.name}] Facebook error code 1 persists — "
+                "switching to split-request mode for creative "
+                "fields as well (fetching creative details "
+                "separately)"
+            )
+            return True
+        if (
+            self._reduced_page_size is None
+            and self.config.get("ads_auto_reduce_page_size", True)
+            and self.page_size > MIN_ADS_PAGE_SIZE
+        ):
+            self._reduced_page_size = MIN_ADS_PAGE_SIZE
+            user_logger.info(
+                f"[{self.name}] Facebook error code 1 persists — reducing ads "
+                f"page size to {MIN_ADS_PAGE_SIZE} (the minimum reliably "
+                "supported by Facebook cursor pagination)"
+            )
+            return True
+        if not self._two_phase_mode and self.config.get("ads_two_phase_on_error", True):
+            self._two_phase_mode = True
+            user_logger.info(
+                f"[{self.name}] Facebook error code 1 persists — switching to "
+                "two-phase mode (listing ad ids only, then batch-fetching ad "
+                "fields separately)"
+            )
+            return True
+        return False
 
     def _request(
         self,
         prepared_request: requests.PreparedRequest,
         context: dict | None,
     ) -> requests.Response:
-        if self._split_tracking_fields or self._split_creative_fields:
-            qs = parse_qs(urlparse(prepared_request.url).query)
-            cursor = qs.get("after", [None])[0]
-            new_params = self.get_url_params(context, cursor)
-            prepared_request.prepare_url(self.url_base + self.path, new_params)
-        return super()._request(prepared_request, context)
+        while True:
+            if self._degradation_active:
+                qs = parse_qs(urlparse(prepared_request.url).query)
+                cursor = qs.get("after", [None])[0]
+                new_params = self.get_url_params(context, cursor)
+                prepared_request.prepare_url(self.url_base + self.path, new_params)
+            try:
+                return super()._request(prepared_request, context)
+            except RetriableAPIError:
+                if self._last_error_code == 1 and self._advance_degradation():
+                    # A new rung was activated: retry right away with the
+                    # smaller request instead of burning the SDK's backoff
+                    # budget on a payload Facebook already refused.
+                    time.sleep(DEGRADATION_RETRY_SLEEP_SECONDS)
+                    continue
+                raise
 
     def parse_response(self, response: requests.Response) -> Any:
         include_preview = self.config.get("include_ad_preview_link", False)
-        split_active = self._split_tracking_fields or self._split_creative_fields
-        if split_active and response.status_code == HTTPStatus.OK:
-            records = response.json().get("data", [])
-            ad_ids = [r["id"] for r in records if "id" in r]
-            tracking_data = {}
-            if self._split_tracking_fields:
-                tracking_data = self._fetch_tracking_fields(ad_ids)
-            creative_data = {}
-            if self._split_creative_fields:
-                creative_data = self._fetch_creative_fields(records)
-            preview_data = self._fetch_preview_links(ad_ids) if include_preview else {}
+        enrichment_active = (
+            self._split_tracking_fields
+            or self._split_creative_fields
+            or self._two_phase_mode
+            or include_preview
+        )
+        if not enrichment_active or response.status_code != HTTPStatus.OK:
+            yield from super().parse_response(response)
+            return
+
+        records = list(response.json().get("data", []))
+        ad_ids = [r["id"] for r in records if "id" in r]
+
+        if self._two_phase_mode:
+            base_data = self._fetch_base_fields(ad_ids)
+            merged = []
             for record in records:
                 ad_id = record.get("id")
-                record.update(tracking_data.get(ad_id, {}))
-                if ad_id in creative_data:
-                    record["creative"] = creative_data[ad_id]
-                if include_preview:
-                    record["preview_shareable_link"] = preview_data.get(ad_id)
-                yield record
-        else:
+                if ad_id in base_data:
+                    record.update(base_data[ad_id])
+                    merged.append(record)
+                else:
+                    # Emitting a skeleton row here could shadow a previously
+                    # complete row in the warehouse, so skip it instead: the
+                    # loss is bounded to this one ad and explicitly logged.
+                    user_logger.warning(
+                        f"[{self.name}] Could not fetch fields for ad {ad_id} "
+                        "even after splitting requests — skipping this ad for "
+                        "this run"
+                    )
+            records = merged
+
+        tracking_data = self._fetch_tracking_fields(ad_ids) if self._split_tracking_fields else {}
+        # In two-phase mode the inline creative expansion is impossible (the
+        # listing only carries ids), so the creatives child stream depends on
+        # this separate fetch regardless of the split_creative_on_error flag.
+        fetch_full_creatives = self._split_creative_fields or (
+            self._two_phase_mode and "creatives" in self._tap.streams
+        )
+        creative_data = self._fetch_creative_fields(records) if fetch_full_creatives else {}
+        preview_data = self._fetch_preview_links(ad_ids) if include_preview else {}
+
+        for record in records:
+            ad_id = record.get("id")
+            record.update(tracking_data.get(ad_id, {}))
+            if ad_id in creative_data:
+                record["creative"] = creative_data[ad_id]
             if include_preview:
-                records = list(super().parse_response(response))
-                ad_ids = [r["id"] for r in records if "id" in r]
-                preview_data = self._fetch_preview_links(ad_ids)
-                for record in records:
-                    record["preview_shareable_link"] = preview_data.get(record.get("id"))
-                    yield record
-            else:
-                yield from super().parse_response(response)
+                record["preview_shareable_link"] = preview_data.get(ad_id)
+            yield record
 
     _GRAPH_HELPER_MAX_ATTEMPTS = 3
     _GRAPH_HELPER_TIMEOUT = 60
@@ -414,40 +510,93 @@ class AdsStream(IncrementalFacebookStream):
                 time.sleep(wait)
         return None
 
+    _BATCH_LOOKUP_CHUNK_SIZE = 50
+
+    def _is_data_limit_error(self, response: requests.Response) -> bool:
+        """Return True when the response is Facebook's data-limit error (code 1)."""
+        if response.status_code != HTTPStatus.INTERNAL_SERVER_ERROR:
+            return False
+        try:
+            return response.json().get("error", {}).get("code") == 1
+        except Exception:
+            return False
+
+    def _batch_id_lookup(self, ids: list[str], params: dict, label: str) -> dict[str, dict]:
+        """Fetch objects by id via the Graph batch lookup endpoint, keyed by id.
+
+        Requests _BATCH_LOOKUP_CHUNK_SIZE ids per call (the endpoint's limit).
+        A chunk that hits the Facebook data-limit error (code 1) is split in
+        half and retried, down to a single id — so at worst one problematic
+        object is skipped (with an explicit warning) instead of a whole chunk.
+        Ids that ultimately fail are absent from the result.
+        """
+        if not ids:
+            return {}
+        result: dict[str, dict] = {}
+        pending = [
+            ids[i : i + self._BATCH_LOOKUP_CHUNK_SIZE]
+            for i in range(0, len(ids), self._BATCH_LOOKUP_CHUNK_SIZE)
+        ]
+        while pending:
+            chunk = pending.pop(0)
+            resp = self._graph_batch_request(
+                "get",
+                params={**params, "ids": ",".join(chunk)},
+                label=label,
+            )
+            if resp is None:
+                # Network failure after retries — already logged by
+                # _graph_batch_request; skip this chunk.
+                continue
+            if resp.status_code == HTTPStatus.OK:
+                result.update(resp.json())
+                continue
+            if self._is_data_limit_error(resp) and len(chunk) > 1:
+                mid = len(chunk) // 2
+                user_logger.warning(
+                    f"[{self.name}] {label}: Facebook data-limit error on a "
+                    f"chunk of {len(chunk)} ids — splitting the chunk and retrying"
+                )
+                pending[:0] = [chunk[:mid], chunk[mid:]]
+                continue
+            user_logger.warning(
+                f"[{self.name}] {label}: failed to fetch {len(chunk)} object(s) "
+                f"(status {resp.status_code}) — skipping. "
+                f"Response: {self._redacted_response_body(resp)}"
+            )
+        return result
+
     def _fetch_tracking_fields(self, ad_ids: list[str]) -> dict[str, dict]:
         """Batch-fetch tracking_specs, conversion_specs and recommendations for ad IDs.
 
-        Uses the Facebook batch ID lookup endpoint, chunked to 50 ids per call
-        (the endpoint's limit):
-        GET /{version}/?ids=id1,id2,...&fields=tracking_specs,conversion_specs,recommendations
-        Returns a dict keyed by ad ID. Ads whose chunk failed are simply absent
-        from the result (tracking fields will be null for those rows on this page).
+        Returns a dict keyed by ad ID. Ads whose lookup ultimately failed are
+        simply absent from the result (tracking fields will be null for those
+        rows on this page).
         """
-        if not ad_ids:
-            return {}
-        result: dict[str, dict] = {}
-        for chunk in [ad_ids[i : i + 50] for i in range(0, len(ad_ids), 50)]:
-            resp = self._graph_batch_request(
-                "get",
-                params={
-                    "ids": ",".join(chunk),
-                    "fields": "tracking_specs,conversion_specs,recommendations",
-                    "access_token": self.config["access_token"],
-                },
-                label="tracking fields",
-            )
-            if resp is None:
-                continue
-            if resp.status_code != HTTPStatus.OK:
-                user_logger.warning(
-                    f"[{self.name}] Failed to fetch tracking fields for "
-                    f"{len(chunk)} ads (status {resp.status_code}) — tracking "
-                    "fields will be null for this chunk. "
-                    f"Response: {self._redacted_response_body(resp)}"
-                )
-                continue
-            result.update(resp.json())
-        return result
+        return self._batch_id_lookup(
+            ad_ids,
+            params={
+                "fields": "tracking_specs,conversion_specs,recommendations",
+                "access_token": self.config["access_token"],
+            },
+            label="tracking fields",
+        )
+
+    def _fetch_base_fields(self, ad_ids: list[str]) -> dict[str, dict]:
+        """Batch-fetch the inline ad fields for two-phase mode, keyed by ad id.
+
+        In two-phase mode the /ads listing only returns id and updated_time;
+        this fetches the remaining base columns (plus the bare creative
+        reference) via the batch id lookup endpoint.
+        """
+        return self._batch_id_lookup(
+            ad_ids,
+            params={
+                "fields": ",".join([*BASE_AD_COLUMNS, "creative"]),
+                "access_token": self.config["access_token"],
+            },
+            label="ad base fields",
+        )
 
     def _fetch_creative_fields(self, records: list[dict]) -> dict[str, dict]:
         """Batch-fetch full creative field data for a page of split-creative ads.
@@ -456,8 +605,8 @@ class AdsStream(IncrementalFacebookStream):
         `creative` field on each ad, so each record's `creative` is just
         `{"id": ...}`. This fetches the full set of creative columns (matching
         what `creatives` stream needs, based on `creative_fields_mode`) via the
-        Facebook batch ID lookup endpoint, keyed by creative ID, chunked to 50
-        ids per call, then remaps the result back to ad ID so callers can
+        Facebook batch ID lookup endpoint, keyed by creative ID (see
+        _batch_id_lookup for chunking), then remaps the result back to ad ID so callers can
         replace `record["creative"]` with the complete object — matching what
         the inline expansion used to return, so `get_child_context` keeps
         feeding `creatives` the same data as before.
@@ -483,31 +632,16 @@ class AdsStream(IncrementalFacebookStream):
         thumbnail_height = self.config.get("creative_thumbnail_height", 1024)
 
         creative_ids = list(dict.fromkeys(creative_id_by_ad.values()))
-        id_chunks = [creative_ids[i : i + 50] for i in range(0, len(creative_ids), 50)]
-        creatives_by_id: dict[str, dict] = {}
-        for chunk in id_chunks:
-            resp = self._graph_batch_request(
-                "get",
-                params={
-                    "ids": ",".join(chunk),
-                    "fields": fields,
-                    "thumbnail_width": thumbnail_width,
-                    "thumbnail_height": thumbnail_height,
-                    "access_token": self.config["access_token"],
-                },
-                label="creative fields",
-            )
-            if resp is None:
-                continue
-            if resp.status_code != HTTPStatus.OK:
-                user_logger.warning(
-                    f"[{self.name}] Failed to fetch creative fields for "
-                    f"{len(chunk)} creatives (status {resp.status_code}) — "
-                    "creative fields will be incomplete for this chunk. "
-                    f"Response: {self._redacted_response_body(resp)}"
-                )
-                continue
-            creatives_by_id.update(resp.json())
+        creatives_by_id = self._batch_id_lookup(
+            creative_ids,
+            params={
+                "fields": fields,
+                "thumbnail_width": thumbnail_width,
+                "thumbnail_height": thumbnail_height,
+                "access_token": self.config["access_token"],
+            },
+            label="creative fields",
+        )
 
         return {
             ad_id: creatives_by_id[creative_id]
@@ -570,14 +704,25 @@ class AdsStream(IncrementalFacebookStream):
 
         Facebook cursor pagination can loop indefinitely at small page sizes
         because paging.cursors.after is always present, even on the last page.
-        At page_size >= 50 (we use 100), paging.next reliably indicates whether
-        more pages exist.
+        At page_size >= 50, paging.next reliably indicates whether more pages
+        exist — which is why the degradation ladder never reduces the page
+        size below MIN_ADS_PAGE_SIZE. As a safety net, a repeated cursor
+        aborts the run loudly instead of re-extracting the same page forever.
         """
         resp_json = response.json()
         paging = resp_json.get("paging", {})
         if "next" not in paging:
             return None
-        return paging.get("cursors", {}).get("after")
+        token = paging.get("cursors", {}).get("after")
+        if token is not None and token == previous_token:
+            user_logger.error(
+                f"[{self.name}] Pagination loop detected: Facebook returned "
+                f"the same cursor twice at page_size={self.page_size}. "
+                "Aborting to avoid re-extracting the same page indefinitely; "
+                "if this persists, increase ads_page_size."
+            )
+            sys.exit(1)
+        return token
 
     def sanitize_field_names(self, record):
         if isinstance(record, dict):

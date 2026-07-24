@@ -265,6 +265,38 @@ class TapFacebook(Tap):
             ),
         ),
         th.Property(
+            "split_creative_on_error",
+            th.BooleanType,
+            default=True,
+            description=(
+                "If the ads stream still hits Facebook error code 1 after tracking fields "
+                "are excluded, fetch creative fields in a separate batched request instead "
+                "of inline. Disable to fall back to the previous behavior."
+            ),
+        ),
+        th.Property(
+            "ads_auto_reduce_page_size",
+            th.BooleanType,
+            default=True,
+            description=(
+                "Automatically reduce the ads page size to 50 when Facebook error code 1 "
+                "('Please reduce the amount of data you\\'re asking for') persists after "
+                "tracking and creative fields are already split out. Never goes below 50 "
+                "due to Facebook pagination constraints."
+            ),
+        ),
+        th.Property(
+            "ads_two_phase_on_error",
+            th.BooleanType,
+            default=True,
+            description=(
+                "Last resort for Facebook error code 1 on the ads stream: list ads with "
+                "id and updated_time only, then batch-fetch the remaining fields by id in "
+                "small chunks. Activated automatically only when every other mitigation "
+                "step was insufficient."
+            ),
+        ),
+        th.Property(
             "include_ad_preview_link",
             th.BooleanType,
             default=False,
