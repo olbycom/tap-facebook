@@ -455,6 +455,77 @@ class TestRequestRecordsIntegration:
         assert len(sent_urls) == 3
 
 
+class TestTransientErrorRetry:
+    """Facebook transient errors (is_transient / code 2) must be retried on
+    any stream, even when reported under a 4xx status (NEKT-4334)."""
+
+    TRANSIENT_400_BODY = {
+        "error": {
+            "message": "(#2) Service temporarily unavailable",
+            "type": "OAuthException",
+            "is_transient": True,
+            "code": 2,
+            "fbtrace_id": "A6fA09yVfxOu-BfUGpQ5Wzs",
+        }
+    }
+
+    def _adaccounts_stream(self):
+        tap = TapFacebook(config=dict(SAMPLE_CONFIG))
+        return tap.streams["adaccounts"]
+
+    def test_transient_400_raises_retriable_on_adaccounts(self):
+        stream = self._adaccounts_stream()
+        with pytest.raises(RetriableAPIError):
+            stream.validate_response(make_response(400, self.TRANSIENT_400_BODY))
+
+    def test_transient_400_raises_retriable_on_ads(self):
+        stream = make_stream()
+        with pytest.raises(RetriableAPIError):
+            stream.validate_response(make_response(400, self.TRANSIENT_400_BODY))
+
+    def test_is_transient_flag_alone_is_enough(self):
+        stream = self._adaccounts_stream()
+        body = {"error": {"message": "Some other blip", "is_transient": True, "code": 999}}
+        with pytest.raises(RetriableAPIError):
+            stream.validate_response(make_response(400, body))
+
+    def test_code_2_alone_is_enough(self):
+        stream = self._adaccounts_stream()
+        body = {"error": {"message": "Service temporarily unavailable", "code": 2}}
+        with pytest.raises(RetriableAPIError):
+            stream.validate_response(make_response(400, body))
+
+    def test_regular_400_still_exits(self):
+        stream = self._adaccounts_stream()
+        body = {"error": {"message": "Invalid parameter", "type": "OAuthException", "code": 100}}
+        with pytest.raises(SystemExit):
+            stream.validate_response(make_response(400, body))
+
+    def test_permission_403_still_exits(self):
+        stream = self._adaccounts_stream()
+        body = {"error": {"message": "(#200) Permissions error", "type": "OAuthException", "code": 200}}
+        with pytest.raises(SystemExit):
+            stream.validate_response(make_response(403, body))
+
+    def test_rate_limit_400_still_retriable(self):
+        stream = self._adaccounts_stream()
+        body = {"error": {"message": "(#80004) There have been too many calls", "code": 80004}}
+        with pytest.raises(RetriableAPIError):
+            stream.validate_response(make_response(400, body))
+
+    def test_500_still_retriable(self):
+        stream = self._adaccounts_stream()
+        with pytest.raises(RetriableAPIError):
+            stream.validate_response(make_response(500, {"error": {"code": 2}}))
+
+    def test_non_json_400_still_exits(self):
+        stream = self._adaccounts_stream()
+        response = make_response(400)
+        response._content = b"<html>Bad Request</html>"
+        with pytest.raises(SystemExit):
+            stream.validate_response(response)
+
+
 class TestSchemaCompatibility:
     def test_base_columns_match_schema_properties(self):
         """Every base column must exist in the declared schema (drop-in deploy)."""

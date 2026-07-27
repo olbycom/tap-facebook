@@ -26,6 +26,11 @@ from tap_facebook.api_helper import has_reached_api_limit, sleep_if_rate_limited
 # Common Facebook API error codes
 RATE_LIMIT_ERROR_CODE = 80004
 
+# Facebook error codes that indicate a transient infrastructure problem,
+# e.g. "(#2) Service temporarily unavailable". Facebook returns these with
+# is_transient=true — frequently under a 4xx HTTP status.
+TRANSIENT_ERROR_CODES = {2}
+
 if t.TYPE_CHECKING:
     import requests
 
@@ -105,6 +110,19 @@ class FacebookStream(RESTStream):
 
         return params
 
+    def _is_transient_error(self, response: requests.Response) -> bool:
+        """Return True when the response body marks the error as transient.
+
+        Facebook flags retriable infrastructure hiccups with is_transient=true
+        (e.g. code 2 — "Service temporarily unavailable"); the HTTP status for
+        these is often 400 rather than 5xx.
+        """
+        try:
+            error = response.json().get("error", {})
+        except Exception:
+            return False
+        return error.get("is_transient") is True or error.get("code") in TRANSIENT_ERROR_CODES
+
     def validate_response(self, response: requests.Response) -> None:
         """Validate HTTP response.
 
@@ -148,6 +166,13 @@ class FacebookStream(RESTStream):
                     account_id=self.config.get("account_id"),
                 )
                 user_logger.warning(f"[{self.name}] {msg}")
+                raise RetriableAPIError(msg, response)
+
+            # Facebook reports transient infrastructure errors (e.g. "(#2)
+            # Service temporarily unavailable") with is_transient=true, often
+            # under a 4xx status. They resolve on retry — do not kill the run.
+            if self._is_transient_error(response):
+                user_logger.warning(f"[{self.name}] Transient Facebook API error — will retry: {msg}")
                 raise RetriableAPIError(msg, response)
 
             user_logger.error(f"[{self.name}] {msg}")

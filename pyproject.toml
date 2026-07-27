@@ -17,7 +17,7 @@ readme = "README.md"
 python = ">=3.11"
 requests = "~=2.31.0"
 facebook-business = "^19.0.0"
-nekt-singer-sdk = {git = "https://github.com/nektcom/singer-sdk.git", rev = "v0.22.1"}
+nekt-singer-sdk = {git = "https://github.com/nektcom/singer-sdk.git", rev = "v0.22.2"}
 pendulum = "^3.1.0"
 [tool.poetry.dev-dependencies]
 pytest = ">=7.4.1"
