@@ -17,7 +17,7 @@ from nekt_singer_sdk.typing import (
 )
 from singer_sdk.typing import DateTimeType
 
-from tap_facebook.client import FacebookStream
+from tap_facebook.client import API_VERSION, FacebookStream
 
 # Basic columns - core fields that work with limited permissions
 BASIC_COLUMNS = [
@@ -402,8 +402,7 @@ class AdAccountsStream(FacebookStream):
 
     @property
     def url_base(self) -> str:
-        version = self.config.get("api_version", "")
-        return f"https://graph.facebook.com/{version}/me"
+        return f"https://graph.facebook.com/{API_VERSION}/me"
 
     @property
     def fields_mode(self) -> str:

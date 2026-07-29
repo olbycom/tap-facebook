@@ -23,6 +23,13 @@ from nekt_singer_sdk.streams.core import Stream
 
 from tap_facebook.api_helper import has_reached_api_limit, sleep_if_rate_limited
 
+# The Graph API version is a property of the connector, not a user setting.
+# facebook-business ships the field catalog for exactly one Graph version, so
+# these two must move together -- pinning them independently is what made the
+# tap request v25-only fields from a v24.0 endpoint (NEKT-3931). To move the
+# API version, bump facebook-business in pyproject.toml.
+API_VERSION: str = FacebookAdsApi.API_VERSION
+
 # Common Facebook API error codes
 RATE_LIMIT_ERROR_CODE = 80004
 
@@ -46,9 +53,8 @@ class FacebookStream(RESTStream):
 
     @property
     def url_base(self) -> str:
-        version: str = self.config["api_version"]
         account_id: str = self.config["account_id"]
-        return f"https://graph.facebook.com/{version}/act_{account_id}"
+        return f"https://graph.facebook.com/{API_VERSION}/act_{account_id}"
 
     records_jsonpath = "$.data[*]"  # Or override `parse_response`.
     next_page_token_jsonpath = "$.paging.cursors.after"  # noqa: S105
@@ -212,7 +218,7 @@ class FacebookSDKStream(Stream):
         self.facebook_api = FacebookAdsApi.init(
             access_token=self.config["access_token"],
             timeout=300,
-            api_version=self.config["api_version"],
+            api_version=API_VERSION,
         )
         self.facebook_id = fb_user.User(fbid="me")
 

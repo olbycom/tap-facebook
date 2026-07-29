@@ -22,8 +22,6 @@ plugins:
       kind: date_iso8601
     - name: account_id
       kind: string
-    - name: api_version
-      value: 'v16.0'
     config:
       insights_buffer_days: 7
 environments:

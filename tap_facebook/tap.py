@@ -68,12 +68,9 @@ class TapFacebook(Tap):
             description="The token to authenticate against the API service",
             required=True,
         ),
-        th.Property(
-            "api_version",
-            th.StringType,
-            description="The API version to request data from.",
-            default="v24.0",
-        ),
+        # NOTE: there is deliberately no `api_version` setting. The Graph API
+        # version is tied to the pinned facebook-business release and is owned
+        # by the connector, not the user -- see API_VERSION in client.py.
         th.Property(
             "account_id",
             th.StringType,
@@ -187,6 +184,71 @@ class TapFacebook(Tap):
             th.IntegerType,
             description="The number of reports to request before checking the state and processing them.",
             default=30,
+        ),
+        # Ad insights field groups. BASIC_FIELDS is always requested; each flag
+        # adds one group. They are separate settings because each maps to a
+        # different Facebook capability an account may or may not hold.
+        th.Property(
+            "include_insights_standard_fields",
+            th.BooleanType,
+            description=(
+                "Adds extra cost-per, unique, video retention and landing-page "
+                "metrics to Ads Insights. No special permissions are required, "
+                "but each report becomes heavier and slower to extract."
+            ),
+            default=False,
+        ),
+        th.Property(
+            "include_insights_messaging_fields",
+            th.BooleanType,
+            description=(
+                "Adds marketing message metrics (sent, delivered, read, button "
+                "clicks) to Ads Insights. Only enable if the account runs "
+                "WhatsApp or Messenger message campaigns -- Facebook may reject "
+                "the request otherwise."
+            ),
+            default=False,
+        ),
+        th.Property(
+            "include_insights_commerce_fields",
+            th.BooleanType,
+            description=(
+                "Adds catalog segment and converted product metrics to Ads Insights. "
+                "Only enable if the account has a product catalog with purchase "
+                "tracking configured -- Facebook may reject the request otherwise."
+            ),
+            default=False,
+        ),
+        th.Property(
+            "include_insights_beta_fields",
+            th.BooleanType,
+            description=(
+                "Adds limited-availability metrics such as creative diversity, "
+                "creative fatigue, advanced reach and auction insights to Ads "
+                "Insights. Only enable if the account has elevated product access "
+                "from Facebook -- Facebook may reject the request otherwise."
+            ),
+            default=False,
+        ),
+        th.Property(
+            "include_insights_results_fields",
+            th.BooleanType,
+            description=(
+                "Adds results, cost per result and objective result metrics to Ads "
+                "Insights. Only enable if your campaign objectives report these "
+                "metrics -- Facebook may reject the request otherwise."
+            ),
+            default=False,
+        ),
+        th.Property(
+            "include_insights_attribution_fields",
+            th.BooleanType,
+            description=(
+                "Adds SKAdNetwork and attribution setting metrics to Ads Insights. "
+                "Only enable if attribution is configured on the account -- "
+                "Facebook may reject the request otherwise."
+            ),
+            default=False,
         ),
         th.Property(
             "creative_fields_mode",

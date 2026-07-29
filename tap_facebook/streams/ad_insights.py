@@ -23,47 +23,95 @@ from nekt_singer_sdk.streams.core import REPLICATION_FULL_TABLE, REPLICATION_INC
 from tap_facebook.api_helper import CALL_THRESHOLD_PERCENTAGE, has_reached_api_limit
 from tap_facebook.client import FacebookSDKStream
 
-EXCLUDED_FIELDS = [
+# The set of fields this tap requests is an explicit allow-list, NOT "whatever
+# the installed facebook-business SDK happens to expose".
+#
+# AdsInsights.Field grows with every SDK release (137 entries in 19.x, 222 in
+# 25.x). Deriving the schema from it means a routine dependency bump silently
+# widens the `fields` param sent to the Graph API and rewrites the output
+# schema for every downstream consumer. That is what broke pipelines when
+# facebook-business went 19 -> 25 (NEKT-3931).
+#
+# Adding a field here is a deliberate, reviewable schema change. Bumping the
+# SDK on its own is not. New SDK fields are reported by the drift check in
+# `_log_schema_drift` so they can be adopted intentionally.
+BASIC_FIELDS = [
+    "account_id",
+    "account_name",
+    "action_values",
+    "actions",
+    "ad_id",
+    "ad_name",
+    "adset_id",
+    "adset_name",
+    "campaign_id",
+    "campaign_name",
+    "clicks",
+    "conversion_rate_ranking",
+    "conversion_values",
+    "conversions",
+    "cost_per_action_type",
+    "cost_per_conversion",
+    "cpc",
+    "cpm",
+    "cpp",
+    "ctr",
+    "date_start",
+    "date_stop",
+    "engagement_rate_ranking",
+    "estimated_ad_recall_rate",
+    "estimated_ad_recallers",
+    "frequency",
+    "impressions",
+    "inline_link_click_ctr",
+    "inline_link_clicks",
+    "inline_post_engagement",
+    "outbound_clicks",
+    "outbound_clicks_ctr",
+    "purchase_roas",
+    "quality_ranking",
+    "reach",
+    "spend",
+    "unique_actions",
+    "unique_clicks",
+    "unique_conversions",
+    "unique_ctr",
+    "unique_link_clicks_ctr",
+    "video_15_sec_watched_actions",
+    "video_30_sec_watched_actions",
+    "video_avg_time_watched_actions",
+    "video_p100_watched_actions",
+    "video_p25_watched_actions",
+    "video_p50_watched_actions",
+    "video_p75_watched_actions",
+    "video_p95_watched_actions",
+    "video_play_actions",
+    "video_thruplay_watched_actions",
+]
+
+# Optional field groups, beyond BASIC_FIELDS. Each maps to a Facebook capability
+# an account may or may not hold, so they are opted into independently -- a
+# single "give me everything" switch would demand messaging ads AND a product
+# catalog AND beta access all at once, which almost no account has.
+#
+# STANDARD needs no special permissions or product setup; the rest do.
+STANDARD_FIELDS = [
     "account_currency",
-    # "account_id",
-    # "account_name",
-    # "action_values",
-    # "actions",
     "ad_click_actions",
-    # "ad_id",
     "ad_impression_actions",
-    # "ad_name",
     "adset_end",
-    # "adset_id",
-    # "adset_name",
     "adset_start",
     "age_targeting",
-    "attribution_setting",
-    "auction_bid",
-    "auction_competitiveness",
-    "auction_max_competitor_bid",
+    "average_purchases_conversion_value",
     "buying_type",
-    # "campaign_id",
-    # "campaign_name",
     "canvas_avg_view_percent",
     "canvas_avg_view_time",
-    "catalog_segment_actions",
-    "catalog_segment_value",
-    "catalog_segment_value_mobile_purchase_roas",
-    "catalog_segment_value_omni_purchase_roas",
-    "catalog_segment_value_website_purchase_roas",
-    # "clicks",
     "conversion_lead_rate",
-    # "conversion_rate_ranking",
-    # "conversion_values",
-    # "conversions",
-    "converted_product_quantity",
-    "converted_product_value",
+    "conversion_leads",
     "cost_per_15_sec_video_view",
     "cost_per_2_sec_continuous_video_view",
-    # "cost_per_action_type",
+    "cost_per_6_sec_video_view",
     "cost_per_ad_click",
-    # "cost_per_conversion",
     "cost_per_conversion_lead",
     "cost_per_dda_countby_convs",
     "cost_per_estimated_ad_recallers",
@@ -77,91 +125,241 @@ EXCLUDED_FIELDS = [
     "cost_per_unique_conversion",
     "cost_per_unique_inline_link_click",
     "cost_per_unique_outbound_click",
-    # "cpc",
-    # "cpm",
-    # "cpp",
     "created_time",
     "creative_media_type",
-    # "ctr",
-    # "date_start",
-    # "date_stop",
-    "dda_countby_convs",
-    "dda_results",
-    # "engagement_rate_ranking",
-    # "estimated_ad_recall_rate",
-    "estimated_ad_recall_rate_lower_bound",
-    "estimated_ad_recall_rate_upper_bound",
-    # "estimated_ad_recallers",
-    "estimated_ad_recallers_lower_bound",
-    "estimated_ad_recallers_upper_bound",
-    # "frequency",
     "full_view_impressions",
     "full_view_reach",
     "gender_targeting",
-    # "impressions",
-    # "inline_link_click_ctr",
-    # "inline_link_clicks",
-    # "inline_post_engagement",
+    "instagram_profile_visits",
     "instagram_upcoming_event_reminders_set",
     "instant_experience_clicks_to_open",
     "instant_experience_clicks_to_start",
     "instant_experience_outbound_clicks",
     "interactive_component_tap",
     "labels",
+    "landing_page_view_actions_per_link_click",
+    "landing_page_view_per_link_click",
+    "landing_page_view_per_purchase_rate",
     "location",
-    "marketing_messages_cost_per_delivered",
-    "marketing_messages_cost_per_link_btn_click",
-    "marketing_messages_spend",
-    "marketing_messages_website_purchase_values",
     "mobile_app_purchase_roas",
     "objective",
+    "onsite_conversion_messaging_detected_purchase_deduped",
     "optimization_goal",
-    # "outbound_clicks",
-    # "outbound_clicks_ctr",
     "place_page_name",
-    # "purchase_roas",
+    "purchase_per_landing_page_view",
+    "purchases_per_link_click",
     "qualifying_question_qualify_answer_rate",
-    # "quality_ranking",
-    # "reach",
     "social_spend",
-    # "spend",
-    "total_postbacks",
-    "total_postbacks_detailed",
-    "total_postbacks_detailed_v4",
-    # "unique_actions",
-    # "unique_clicks",
-    # "unique_conversions",
-    # "unique_ctr",
+    "total_card_view",
     "unique_inline_link_click_ctr",
     "unique_inline_link_clicks",
-    # "unique_link_clicks_ctr",
     "unique_outbound_clicks",
     "unique_outbound_clicks_ctr",
     "unique_video_continuous_2_sec_watched_actions",
     "unique_video_view_15_sec",
     "updated_time",
-    # "video_15_sec_watched_actions",
-    # "video_30_sec_watched_actions",
-    # "video_avg_time_watched_actions",
+    "video_6_sec_watched_actions",
     "video_continuous_2_sec_watched_actions",
-    # "video_p100_watched_actions",
-    # "video_p25_watched_actions",
-    # "video_p50_watched_actions",
-    # "video_p75_watched_actions",
-    # "video_p95_watched_actions",
-    # "video_play_actions",
     "video_play_curve_actions",
     "video_play_retention_0_to_15s_actions",
     "video_play_retention_20_to_60s_actions",
     "video_play_retention_graph_actions",
-    # "video_thruplay_watched_actions",
     "video_time_watched_actions",
+    "video_view_per_impression",
     "website_ctr",
     "website_purchase_roas",
     "wish_bid",
-    "__module__",
-    "__doc__",
-    "__dict__",
+]
+
+MESSAGING_FIELDS = [
+    "cost_per_message_delivered",
+    "marketing_messages_click_rate_benchmark",
+    "marketing_messages_cost_per_delivered",
+    "marketing_messages_cost_per_link_btn_click",
+    "marketing_messages_delivered",
+    "marketing_messages_delivery_rate",
+    "marketing_messages_link_btn_click",
+    "marketing_messages_link_btn_click_rate",
+    "marketing_messages_media_view_rate",
+    "marketing_messages_phone_call_btn_click_rate",
+    "marketing_messages_quick_reply_btn_click",
+    "marketing_messages_quick_reply_btn_click_rate",
+    "marketing_messages_read",
+    "marketing_messages_read_rate",
+    "marketing_messages_read_rate_benchmark",
+    "marketing_messages_sent",
+    "marketing_messages_spend",
+    "marketing_messages_spend_currency",
+    "marketing_messages_website_add_to_cart",
+    "marketing_messages_website_initiate_checkout",
+    "marketing_messages_website_purchase",
+    "marketing_messages_website_purchase_values",
+    "messages_delivered",
+    "messages_delivered_ctr",
+    "read_rate",
+    "total_postbacks",
+    "total_postbacks_detailed",
+    "total_postbacks_detailed_v4",
+]
+
+COMMERCE_FIELDS = [
+    "catalog_segment_actions",
+    "catalog_segment_value",
+    "catalog_segment_value_mobile_purchase_roas",
+    "catalog_segment_value_omni_purchase_roas",
+    "catalog_segment_value_website_purchase_roas",
+    "converted_product_app_custom_event_fb_mobile_purchase",
+    "converted_product_app_custom_event_fb_mobile_purchase_value",
+    "converted_product_offline_purchase",
+    "converted_product_offline_purchase_value",
+    "converted_product_omni_purchase",
+    "converted_product_omni_purchase_values",
+    "converted_product_quantity",
+    "converted_product_value",
+    "converted_product_website_pixel_purchase",
+    "converted_product_website_pixel_purchase_value",
+    "converted_promoted_product_app_custom_event_fb_mobile_purchase",
+    "converted_promoted_product_app_custom_event_fb_mobile_purchase_value",
+    "converted_promoted_product_offline_purchase",
+    "converted_promoted_product_offline_purchase_value",
+    "converted_promoted_product_omni_purchase",
+    "converted_promoted_product_omni_purchase_values",
+    "converted_promoted_product_quantity",
+    "converted_promoted_product_value",
+    "converted_promoted_product_website_pixel_purchase",
+    "converted_promoted_product_website_pixel_purchase_value",
+    "product_group_retailer_id",
+    "product_retailer_id",
+    "product_views",
+    "shops_assisted_purchases",
+]
+
+BETA_FIELDS = [
+    "advanced_actions_28d_view",
+    "advanced_reach_1d_lookback",
+    "advanced_reach_28d_lookback",
+    "advanced_reach_7d_lookback",
+    "anchor_event_attribution_setting",
+    "anchor_events_performance_indicator",
+    "auction_bid",
+    "auction_competitiveness",
+    "auction_max_competitor_bid",
+    "configurable_attribution_action",
+    "configurable_attribution_actionvalue",
+    "configurable_audience_overlap_reach",
+    "configurable_reachbyfrequency_action",
+    "configurable_reachbyfrequency_converters_count",
+    "configurable_reachbyfrequency_impressions_cost",
+    "configurable_reachbyfrequency_impressions_count",
+    "configurable_reachbyfrequency_reach",
+    "creative_diversity_data",
+    "creative_diversity_label",
+    "creative_diversity_score",
+    "creative_fatigue_summary",
+    "creative_fatigued_ads",
+    "dda_countby_convs",
+    "dda_results",
+    "estimated_ad_recall_rate_lower_bound",
+    "estimated_ad_recall_rate_upper_bound",
+    "estimated_ad_recallers_lower_bound",
+    "estimated_ad_recallers_upper_bound",
+    "multi_event_conversion_attribution_setting",
+    "opportunity_score_l4",
+    "result_values_performance_indicator",
+]
+
+RESULTS_FIELDS = [
+    "cost_per_objective_result",
+    "cost_per_result",
+    "link_clicks_per_results",
+    "objective_result_rate",
+    "objective_results",
+    "result_rate",
+    "results",
+]
+
+ATTRIBUTION_FIELDS = [
+    "attribution_setting",
+]
+
+# Sub-properties of the AdsActionStats / AdsHistogramStats nested objects.
+# Same rule: pinned so an SDK bump cannot reshape nested records.
+ACTION_STATS_FIELDS = [
+    "1d_click",
+    "1d_ev",
+    "1d_view",
+    "28d_click",
+    "28d_view",
+    "7d_click",
+    "7d_view",
+    "action_brand",
+    "action_canvas_component_id",
+    "action_canvas_component_name",
+    "action_carousel_card_id",
+    "action_carousel_card_name",
+    "action_category",
+    "action_converted_product_id",
+    "action_destination",
+    "action_device",
+    "action_event_channel",
+    "action_link_click_destination",
+    "action_location_code",
+    "action_reaction",
+    "action_target_id",
+    "action_type",
+    "action_video_asset_id",
+    "action_video_sound",
+    "action_video_type",
+    "dda",
+    "inline",
+    "interactive_component_sticker_id",
+    "interactive_component_sticker_response",
+    "skan_click",
+    "skan_click_second_postback",
+    "skan_click_third_postback",
+    "skan_view",
+    "skan_view_second_postback",
+    "skan_view_third_postback",
+    "value",
+]
+
+HISTOGRAM_STATS_FIELDS = [
+    "1d_click",
+    "1d_ev",
+    "1d_view",
+    "28d_click",
+    "28d_view",
+    "7d_click",
+    "7d_view",
+    "action_brand",
+    "action_canvas_component_id",
+    "action_canvas_component_name",
+    "action_carousel_card_id",
+    "action_carousel_card_name",
+    "action_category",
+    "action_converted_product_id",
+    "action_destination",
+    "action_device",
+    "action_event_channel",
+    "action_link_click_destination",
+    "action_location_code",
+    "action_reaction",
+    "action_target_id",
+    "action_type",
+    "action_video_asset_id",
+    "action_video_sound",
+    "action_video_type",
+    "dda",
+    "inline",
+    "interactive_component_sticker_id",
+    "interactive_component_sticker_response",
+    "skan_click",
+    "skan_click_second_postback",
+    "skan_click_third_postback",
+    "skan_view",
+    "skan_view_second_postback",
+    "skan_view_third_postback",
+    "value",
 ]
 
 POLL_JOB_SLEEP_TIME = 5
@@ -254,47 +452,119 @@ class AdsInsightStream(FacebookSDKStream):
         """
         self._primary_keys = new_value
 
-    @staticmethod
-    def _get_datatype(field: str) -> th.Type | None:
+    # config key -> field group. BASIC_FIELDS is always included.
+    OPTIONAL_FIELD_GROUPS: t.ClassVar[dict[str, list[str]]] = {
+        "include_insights_standard_fields": STANDARD_FIELDS,
+        "include_insights_messaging_fields": MESSAGING_FIELDS,
+        "include_insights_commerce_fields": COMMERCE_FIELDS,
+        "include_insights_beta_fields": BETA_FIELDS,
+        "include_insights_results_fields": RESULTS_FIELDS,
+        "include_insights_attribution_fields": ATTRIBUTION_FIELDS,
+    }
+
+    @property
+    def enabled_field_groups(self) -> list[str]:
+        """Names of the optional field groups enabled for this source."""
+        return [key for key in self.OPTIONAL_FIELD_GROUPS if self.config.get(key, False)]
+
+    @property
+    def insights_fields(self) -> list[str]:
+        """Insights fields to request: BASIC_FIELDS plus any enabled group.
+
+        Filtered against the installed SDK so a field retired upstream is
+        skipped rather than raising, and de-duplicated while preserving order.
+        """
+        available = AdsInsights._field_types  # noqa: SLF001
+        selected: list[str] = list(BASIC_FIELDS)
+        for key in self.enabled_field_groups:
+            selected.extend(self.OPTIONAL_FIELD_GROUPS[key])
+        seen: set[str] = set()
+        return [f for f in selected if f in available and not (f in seen or seen.add(f))]
+
+    @property
+    def action_stats_fields(self) -> list[str]:
+        """AdsActionStats sub-properties present in the installed SDK."""
+        return [f for f in ACTION_STATS_FIELDS if f in AdsActionStats._field_types]  # noqa: SLF001
+
+    @property
+    def histogram_stats_fields(self) -> list[str]:
+        """AdsHistogramStats sub-properties present in the installed SDK."""
+        return [
+            f
+            for f in HISTOGRAM_STATS_FIELDS
+            if f in AdsHistogramStats._field_types  # noqa: SLF001
+        ]
+
+    def _get_datatype(self, field: str) -> th.Type | None:
         d_type = AdsInsights._field_types[field]  # noqa: SLF001
         if d_type == "string":
             return th.StringType()
         if d_type.startswith("list"):
             if "AdsActionStats" in d_type:
                 sub_props = [
-                    th.Property(field.replace("field_", ""), th.StringType())
-                    for field in list(AdsActionStats.Field.__dict__)
-                    if field not in EXCLUDED_FIELDS
+                    th.Property(clean_field, th.StringType())
+                    for clean_field in self.action_stats_fields
                 ]
                 return th.ArrayType(th.ObjectType(*sub_props))
             if "AdsHistogramStats" in d_type:
                 sub_props = []
-                for field in list(AdsHistogramStats.Field.__dict__):
-                    if field not in EXCLUDED_FIELDS:
-                        clean_field = field.replace("field_", "")
-                        if AdsHistogramStats._field_types[clean_field] == "string":  # noqa: SLF001
-                            sub_props.append(th.Property(clean_field, th.StringType()))
-                        else:
-                            sub_props.append(
-                                th.Property(
-                                    clean_field,
-                                    th.ArrayType(th.IntegerType()),
-                                ),
-                            )
+                for clean_field in self.histogram_stats_fields:
+                    if AdsHistogramStats._field_types[clean_field] == "string":  # noqa: SLF001
+                        sub_props.append(th.Property(clean_field, th.StringType()))
+                    else:
+                        sub_props.append(
+                            th.Property(
+                                clean_field,
+                                th.ArrayType(th.IntegerType()),
+                            ),
+                        )
                 return th.ArrayType(th.ObjectType(*sub_props))
             return th.ArrayType(th.ObjectType())
         user_logger.error(f"Type not found for field: {field}")
         sys.exit(1)
 
+    def _log_schema_drift(self) -> None:
+        """Report divergence between the curated groups and the installed SDK.
+
+        Neither case is fatal. The groups are the contract, so an SDK bump adds
+        nothing until someone opts in; this only makes the delta visible and
+        names the setting that unlocks each part of it.
+        """
+        available = set(AdsInsights._field_types)  # noqa: SLF001
+        known = set(BASIC_FIELDS).union(*self.OPTIONAL_FIELD_GROUPS.values())
+
+        gone = sorted(known - available)
+        if gone:
+            user_logger.warning(
+                f"[{self.name}] {len(gone)} curated field(s) no longer exist in the "
+                f"installed facebook-business SDK and will be skipped: {', '.join(gone)}"
+            )
+
+        requested = set(self.insights_fields)
+        for key, fields in self.OPTIONAL_FIELD_GROUPS.items():
+            skipped = sorted(set(fields) & available - requested)
+            if skipped:
+                internal_logger.info(
+                    f"[{self.name}] {len(skipped)} field(s) not requested. Set "
+                    f"{key} to true to include them: {', '.join(skipped)}"
+                )
+
+        unclassified = sorted(available - known)
+        if unclassified:
+            internal_logger.info(
+                f"[{self.name}] {len(unclassified)} field(s) offered by the installed "
+                f"facebook-business SDK belong to no group and are unreachable. Add "
+                f"them to a group in ad_insights.py to expose them: "
+                f"{', '.join(unclassified)}"
+            )
+
     @property
     @lru_cache  # noqa: B019
     def schema(self) -> dict:
+        self._log_schema_drift()
         properties: th.List[th.Property] = []
         properties.append(th.Property("id", th.StringType()))
-        columns = list(AdsInsights.Field.__dict__)[1:]
-        for field in columns:
-            if field in EXCLUDED_FIELDS:
-                continue
+        for field in self.insights_fields:
             properties.append(th.Property(field, self._get_datatype(field)))
         for breakdown in self.report_breakdowns:
             properties.append(th.Property(breakdown, th.StringType()))
