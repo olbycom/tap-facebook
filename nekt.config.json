@@ -43,10 +43,10 @@
           "start_date": {
             "type": "string",
             "order": 3,
-            "title": "Start date",
+            "title": "Initial sync date",
             "format": "date",
             "el_type": "extractor",
-            "description": "Records created or updated after the start date will be extracted from the source."
+            "description": "Starting point for data extraction. Only records created or updated after this date will be synced."
           },
           "enable_advanced_reports": {
             "type": "boolean",

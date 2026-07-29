@@ -1,29 +1,42 @@
-[tool.poetry]
-name = "meltano-tap-facebook"
+[project]
+name = "nekt-meltano-tap-facebook"
 version = "0.0.0"
 description = "`tap-facebook` is a Singer tap for facebook, built with the Meltano SDK for Singer Taps."
-authors = ["Meltano <hello@meltano.com>"]
+readme = "README.md"
+authors = [{ name = "Meltano", email = "hello@meltano.com" }]
+license = "Elastic-2.0"
 keywords = [
     "ELT",
     "facebook",
 ]
-license = "Elastic-2.0"
-packages = [
-    { include = "tap_facebook" },
+requires-python = ">=3.11"
+dependencies = [
+    "facebook-business>=19.0.0",
+    "nekt-singer-sdk @ git+https://github.com/nektcom/singer-sdk.git@v0.23.0",
+    "pendulum>=3.1.0",
+    "requests~=2.31.0",
 ]
-readme = "README.md"
 
-[tool.poetry.dependencies]
-python = ">=3.11"
-requests = "~=2.31.0"
-facebook-business = "^19.0.0"
-nekt-singer-sdk = {git = "https://github.com/nektcom/singer-sdk.git", rev = "v0.22.2"}
-pendulum = "^3.1.0"
-[tool.poetry.dev-dependencies]
-pytest = ">=7.4.1"
+[project.optional-dependencies]
+s3 = [
+    "fs-s3fs",
+]
 
-[tool.poetry.extras]
-s3 = ["fs-s3fs"]
+[project.scripts]
+tap-facebook = 'tap_facebook.tap:TapFacebook.cli'
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "tap_facebook",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 addopts = '--durations=10'
@@ -49,10 +62,7 @@ allow-star-arg-any = true
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
 
-[tool.poetry.scripts]
-# CLI declaration
-tap-facebook = 'tap_facebook.tap:TapFacebook.cli'
+[build-system]
+requires = ["hatchling>=1,<2"]
+build-backend = "hatchling.build"
