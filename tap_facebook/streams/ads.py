@@ -23,7 +23,7 @@ from nekt_singer_sdk.typing import (
     StringType,
 )
 
-from tap_facebook.client import IncrementalFacebookStream
+from tap_facebook.client import API_VERSION, IncrementalFacebookStream
 
 if TYPE_CHECKING:
     from tap_facebook.streams.creative import CreativeStream
@@ -483,8 +483,7 @@ class AdsStream(IncrementalFacebookStream):
         with exponential backoff and returns None once attempts are exhausted,
         letting callers skip the chunk instead of failing the run.
         """
-        version = self.config["api_version"]
-        url = f"https://graph.facebook.com/{version}/"
+        url = f"https://graph.facebook.com/{API_VERSION}/"
         for attempt in range(1, self._GRAPH_HELPER_MAX_ATTEMPTS + 1):
             try:
                 return requests.request(
