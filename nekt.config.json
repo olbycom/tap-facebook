@@ -97,8 +97,10 @@
           "report_definition": {
             "type": "object",
             "order": 8,
+            "title": "Report definition",
             "format": "parent",
             "el_type": "extractor",
+            "description": "Attribution and lookback settings applied to the Ads Insights reports.",
             "required": [
               "lookback_window",
               "action_report_time"
