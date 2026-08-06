@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 import typing as t
@@ -95,13 +96,15 @@ BASIC_FIELDS = [
 # catalog AND beta access all at once, which almost no account has.
 #
 # STANDARD needs no special permissions or product setup; the rest do.
+#
+# Membership in the installed SDK's catalog is NOT enough to be listed in a group:
+# the SDK keeps names the Graph API no longer serves, and one unacceptable name
+# makes the API reject the whole `fields` param -- so a single dead entry zeroes
+# out the entire stream. See REJECTED_FIELDS below for the ones already ruled out.
 STANDARD_FIELDS = [
     "account_currency",
     "ad_click_actions",
     "ad_impression_actions",
-    "adset_end",
-    "adset_start",
-    "age_targeting",
     "average_purchases_conversion_value",
     "buying_type",
     "canvas_avg_view_percent",
@@ -129,18 +132,15 @@ STANDARD_FIELDS = [
     "creative_media_type",
     "full_view_impressions",
     "full_view_reach",
-    "gender_targeting",
     "instagram_profile_visits",
     "instagram_upcoming_event_reminders_set",
     "instant_experience_clicks_to_open",
     "instant_experience_clicks_to_start",
     "instant_experience_outbound_clicks",
     "interactive_component_tap",
-    "labels",
     "landing_page_view_actions_per_link_click",
     "landing_page_view_per_link_click",
     "landing_page_view_per_purchase_rate",
-    "location",
     "mobile_app_purchase_roas",
     "objective",
     "onsite_conversion_messaging_detected_purchase_deduped",
@@ -190,16 +190,9 @@ MESSAGING_FIELDS = [
     "marketing_messages_sent",
     "marketing_messages_spend",
     "marketing_messages_spend_currency",
-    "marketing_messages_website_add_to_cart",
-    "marketing_messages_website_initiate_checkout",
-    "marketing_messages_website_purchase",
-    "marketing_messages_website_purchase_values",
     "messages_delivered",
     "messages_delivered_ctr",
     "read_rate",
-    "total_postbacks",
-    "total_postbacks_detailed",
-    "total_postbacks_detailed_v4",
 ]
 
 COMMERCE_FIELDS = [
@@ -244,14 +237,6 @@ BETA_FIELDS = [
     "auction_bid",
     "auction_competitiveness",
     "auction_max_competitor_bid",
-    "configurable_attribution_action",
-    "configurable_attribution_actionvalue",
-    "configurable_audience_overlap_reach",
-    "configurable_reachbyfrequency_action",
-    "configurable_reachbyfrequency_converters_count",
-    "configurable_reachbyfrequency_impressions_cost",
-    "configurable_reachbyfrequency_impressions_count",
-    "configurable_reachbyfrequency_reach",
     "creative_diversity_data",
     "creative_diversity_label",
     "creative_diversity_score",
@@ -259,10 +244,6 @@ BETA_FIELDS = [
     "creative_fatigued_ads",
     "dda_countby_convs",
     "dda_results",
-    "estimated_ad_recall_rate_lower_bound",
-    "estimated_ad_recall_rate_upper_bound",
-    "estimated_ad_recallers_lower_bound",
-    "estimated_ad_recallers_upper_bound",
     "multi_event_conversion_attribution_setting",
     "opportunity_score_l4",
     "result_values_performance_indicator",
@@ -281,6 +262,39 @@ RESULTS_FIELDS = [
 ATTRIBUTION_FIELDS = [
     "attribution_setting",
 ]
+
+# Fields the installed SDK exposes but the Graph API refuses, with the reason it
+# gave when asked (checked against v25.0 for NEKT-4527). They are deliberately in
+# no group: the drift check reports unclassified SDK fields as candidates to
+# adopt, and without this list these 23 would be offered up again on every run.
+# Re-add one only after a live request proves the API now accepts it.
+REJECTED_FIELDS = {
+    "age_targeting": "retired after Graph API v19.0",
+    "gender_targeting": "retired after Graph API v19.0",
+    "labels": "retired after Graph API v19.0",
+    "location": "retired after Graph API v19.0",
+    "estimated_ad_recall_rate_lower_bound": "retired after Graph API v19.0",
+    "estimated_ad_recall_rate_upper_bound": "retired after Graph API v19.0",
+    "estimated_ad_recallers_lower_bound": "retired after Graph API v19.0",
+    "estimated_ad_recallers_upper_bound": "retired after Graph API v19.0",
+    "adset_end": "not readable as a summary field when results are fetched",
+    "adset_start": "not readable as a summary field when results are fetched",
+    "marketing_messages_website_add_to_cart": "not a valid insights field",
+    "marketing_messages_website_initiate_checkout": "not a valid insights field",
+    "marketing_messages_website_purchase": "not a valid insights field",
+    "marketing_messages_website_purchase_values": "not a valid insights field",
+    "configurable_attribution_action": "requires a customization_name filter",
+    "configurable_attribution_actionvalue": "requires a customization_name filter",
+    "configurable_audience_overlap_reach": "requires a customization_name filter",
+    "configurable_reachbyfrequency_action": "requires a customization_name filter",
+    "configurable_reachbyfrequency_converters_count": "requires a customization_name filter",
+    "configurable_reachbyfrequency_impressions_cost": "requires a customization_name filter",
+    "configurable_reachbyfrequency_impressions_count": "requires a customization_name filter",
+    "configurable_reachbyfrequency_reach": "requires a customization_name filter",
+    "total_postbacks": "cannot be combined with other fields",
+    "total_postbacks_detailed": "cannot be combined with other fields",
+    "total_postbacks_detailed_v4": "cannot be combined with other fields",
+}
 
 # Sub-properties of the AdsActionStats / AdsHistogramStats nested objects.
 # Same rule: pinned so an SDK bump cannot reshape nested records.
@@ -377,6 +391,26 @@ JOB_STALE_ERROR_MESSAGE = (
 
 VALID_GRANULARITIES = {"daily", "monthly"}
 
+# Graph API error code returned when the `fields` param is not acceptable.
+FIELDS_PARAM_ERROR_CODE = 100
+
+# Field names are word tokens, so the rejected ones can be read straight out of
+# the API's own message. Matching whole tokens matters: a substring search for
+# `estimated_ad_recall_rate` also hits `estimated_ad_recall_rate_lower_bound`.
+_WORD_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _columns_named_in_error(message: str, columns: list[str]) -> list[str]:
+    """Return the requested columns Facebook named in an error message.
+
+    Every #100 phrasing seen so far enumerates the offending fields, whatever the
+    reason -- retired after a version, unknown name, needs an extra filter, or not
+    combinable with others. Reading the names back lets the sync drop exactly those
+    and keep going, instead of losing the whole stream to one dead field.
+    """
+    tokens = set(_WORD_TOKEN.findall(message))
+    return [column for column in columns if column in tokens]
+
 
 class AdsInsightStream(FacebookSDKStream):
     name = "adsinsights"
@@ -413,6 +447,112 @@ class AdsInsightStream(FacebookSDKStream):
         if self.effective_granularity == "monthly":
             return current_date.add(months=1).start_of("month")
         return current_date.add(days=time_increment)
+
+    def _fail_if_nothing_queued(self, batches_attempted: int, reports_queued: int) -> None:
+        """Abort the run when not a single report could be queued.
+
+        Returning cleanly would be indistinguishable from "the account has no
+        data for this period", and a full-refresh load reads that as an empty
+        snapshot -- overwriting a populated table with nothing.
+        """
+        if not batches_attempted or reports_queued:
+            return
+
+        user_logger.error(
+            f"[{self.name}] Facebook refused every report request in this run, so no data could be "
+            "extracted. The existing data was left untouched. Please contact Nekt support."
+        )
+        internal_logger.error(
+            f"[{self.name}] {batches_attempted} batch(es) attempted, 0 reports queued; failing the run "
+            "so the loader does not overwrite the table with an empty snapshot."
+        )
+        sys.exit(1)
+
+    def _record_columns_refused_while_reading(
+        self,
+        fb_err: FacebookRequestError,
+        columns: list[str],
+        report_date: str,
+        date_obj: pendulum.Date,
+    ) -> bool:
+        """Note columns the API refused while the report was being read back.
+
+        A field can pass report creation and still be refused when the results
+        are fetched (e.g. "nonexisting summary field"), so the same remedy
+        applies here. Returns True when the caller should stop and let the sync
+        resume from this date with a narrower field set -- retrying the exact
+        same columns only burns ten minutes to fail identically.
+        """
+        if fb_err.api_error_code() != FIELDS_PARAM_ERROR_CODE:
+            return False
+
+        message = fb_err.api_error_message() or str(fb_err)
+        rejected = _columns_named_in_error(message, columns)
+        if not rejected:
+            return False
+
+        self._rejected_columns = rejected
+        self._restart_from = date_obj
+        internal_logger.warning(
+            f"[{self.name}] Graph API refused {len(rejected)} column(s) while reading the report "
+            f"for {report_date}: {message}. Restarting from this date without them."
+        )
+        return True
+
+    def _resume_after_rejection(
+        self,
+        columns: list[str],
+        report_date: pendulum.Date,
+    ) -> tuple[list[str], pendulum.Date]:
+        """Drop the columns Facebook refused and say where to pick the sync back up.
+
+        Keeping them is not an option: the API rejects the request as a whole
+        rather than ignoring the offending field, so one dead name means the
+        stream yields nothing at all. Resuming from `_restart_from` (set when the
+        rejection happened mid-batch) keeps already-yielded dates from repeating.
+        """
+        resume_from = self._restart_from or report_date
+        self._restart_from = None
+
+        dropped = self._rejected_columns
+        self._rejected_columns = []
+        remaining = [column for column in columns if column not in set(dropped)]
+
+        if not remaining:
+            user_logger.error(
+                f"[{self.name}] Facebook rejected every metric requested for this stream, so no data "
+                "could be extracted. Please contact Nekt support."
+            )
+            internal_logger.error(
+                f"[{self.name}] Every column was rejected by the Graph API; nothing left to request."
+            )
+            sys.exit(1)
+
+        user_logger.warning(
+            f"[{self.name}] Facebook is no longer serving {len(dropped)} of the requested metrics "
+            f"({', '.join(dropped)}). The extraction continues without them, so their columns will be "
+            "empty. No action is needed on your side -- contact Nekt support if you rely on them."
+        )
+        internal_logger.warning(
+            f"[{self.name}] Retrying {resume_from.to_date_string()} with {len(remaining)} column(s) "
+            f"after dropping: {', '.join(dropped)}"
+        )
+        return remaining, resume_from
+
+    def _advance_batch(
+        self,
+        current_date: pendulum.Date,
+        time_increment: int | str,
+        batch_size: int,
+        end_date: pendulum.Date,
+    ) -> pendulum.Date:
+        """Advance past every date a batch starting here would have covered."""
+        next_date = current_date
+        for _ in range(max(batch_size, 1)):
+            next_date = self._advance_date(next_date, time_increment)
+            if next_date > end_date:
+                break
+        return next_date
 
     def _get_time_range(self, current_date: pendulum.Date) -> dict:
         """Return the time_range dict for the Facebook API request.
@@ -549,13 +689,21 @@ class AdsInsightStream(FacebookSDKStream):
                     f"{key} to true to include them: {', '.join(skipped)}"
                 )
 
-        unclassified = sorted(available - known)
+        unclassified = sorted(available - known - set(REJECTED_FIELDS))
         if unclassified:
             internal_logger.info(
                 f"[{self.name}] {len(unclassified)} field(s) offered by the installed "
                 f"facebook-business SDK belong to no group and are unreachable. Add "
                 f"them to a group in ad_insights.py to expose them: "
                 f"{', '.join(unclassified)}"
+            )
+
+        excluded = sorted(set(REJECTED_FIELDS) & available)
+        if excluded:
+            internal_logger.info(
+                f"[{self.name}] {len(excluded)} field(s) are exposed by the SDK but "
+                f"deliberately excluded because the Graph API refuses them (see "
+                f"REJECTED_FIELDS); do not re-add without a live check: {', '.join(excluded)}"
             )
 
     @property
@@ -660,10 +808,40 @@ class AdsInsightStream(FacebookSDKStream):
                     user_logger.info(f"[{self.name}] Queued report for {current_date.to_date_string()}")
                 else:
                     user_logger.warning(f"[{self.name}] Failed to queue report for {current_date.to_date_string()}")
+                    internal_logger.warning(
+                        f"[{self.name}] Report creation for {current_date.to_date_string()} returned "
+                        f"HTTP {response.status()} instead of 200; no report_run_id was issued."
+                    )
 
             except FacebookRequestError as fb_err:
+                message = fb_err.api_error_message() or str(fb_err)
+                rejected = (
+                    _columns_named_in_error(message, columns)
+                    if fb_err.api_error_code() == FIELDS_PARAM_ERROR_CODE
+                    else []
+                )
+
+                if rejected:
+                    # The same `fields` param goes out for every date in the batch,
+                    # so the remaining dates would fail identically -- and would keep
+                    # failing on every future batch. Hand the names back to the caller,
+                    # which retries this same date without them.
+                    self._rejected_columns = rejected
+                    internal_logger.warning(
+                        f"[{self.name}] Graph API rejected the fields param for "
+                        f"{current_date.to_date_string()} (code {fb_err.api_error_code()}): {message}. "
+                        f"Dropping {len(rejected)} column(s) and retrying the batch: {', '.join(rejected)}"
+                    )
+                    break
+
                 user_logger.warning(
                     f"[{self.name}] Error queueing report for {current_date.to_date_string()}: {fb_err.api_error_message()}"
+                )
+                internal_logger.warning(
+                    f"[{self.name}] Report creation failed for {current_date.to_date_string()} "
+                    f"(code {fb_err.api_error_code()}, subcode {fb_err.api_error_subcode()}, "
+                    f"HTTP {fb_err.http_status()}): {message}",
+                    exc_info=True,
                 )
 
             current_date = self._advance_date(current_date, time_increment)
@@ -755,6 +933,20 @@ class AdsInsightStream(FacebookSDKStream):
                             user_logger.warning(f"[{self.name}] Unexpected result type for {report_date}")
                     yield from records
                     break
+                except FacebookRequestError as fb_err:
+                    if self._record_columns_refused_while_reading(fb_err, columns, report_date, date_obj):
+                        return
+
+                    user_logger.warning(
+                        f"[{self.name}] Error reading results for {report_date} (attempt {attempt}/{max_retries}): "
+                        f"{fb_err.api_error_message()}. Retrying..."
+                    )
+                    internal_logger.warning(
+                        f"[{self.name}] Reading report {report_run_id} for {report_date} failed "
+                        f"(code {fb_err.api_error_code()}, HTTP {fb_err.http_status()}): "
+                        f"{fb_err.api_error_message()}",
+                        exc_info=True,
+                    )
                 except Exception as e:
                     user_logger.warning(
                         f"[{self.name}] Error reading results for {report_date} (attempt {attempt}/{max_retries}): {e}. Retrying..."
@@ -897,7 +1089,11 @@ class AdsInsightStream(FacebookSDKStream):
         columns = self._get_selected_columns()
 
         retry_count = 0
-        batch_size = self.config.get("ad_insights_report_batch_size")
+        batch_size = self.config.get("ad_insights_report_batch_size") or 30
+        self._rejected_columns = []
+        self._restart_from = None
+        batches_attempted = 0
+        reports_queued = 0
 
         # Use batch processing for parallel report creation
         while report_date <= sync_end_date:
@@ -907,6 +1103,7 @@ class AdsInsightStream(FacebookSDKStream):
 
             try:
                 # Create a batch of reports in parallel
+                batches_attempted += 1
                 batch_reports = self._create_report_batch(
                     start_date=report_date,
                     batch_size=batch_size,
@@ -914,15 +1111,31 @@ class AdsInsightStream(FacebookSDKStream):
                     columns=columns,
                     time_increment=time_increment,
                 )
+                reports_queued += len(batch_reports)
+
+                if self._rejected_columns:
+                    # Same date, narrower field set. The rejected list only ever
+                    # shrinks `columns`, so this cannot loop forever.
+                    columns, report_date = self._resume_after_rejection(columns, report_date)
+                    continue
 
                 if not batch_reports:
-                    # No reports created, advance date and continue
-                    report_date = self._advance_date(report_date, time_increment)
+                    # Nothing queued: skip the whole span this batch just tried,
+                    # not a single date -- otherwise every date is re-requested
+                    # up to batch_size times before the window moves past it.
+                    report_date = self._advance_batch(report_date, time_increment, batch_size, sync_end_date)
                     continue
 
                 # Process all reports in the batch
                 for record in self._process_report_batch(batch_reports, columns, time_increment):
                     yield record
+
+                if self._rejected_columns:
+                    # A column was refused while reading results: resume from the
+                    # date that failed, so dates already yielded in this batch are
+                    # not emitted twice.
+                    columns, report_date = self._resume_after_rejection(columns, report_date)
+                    continue
 
                 # Successfully processed batch, advance to next batch
                 last_date = batch_reports[-1]["date_obj"]
@@ -949,6 +1162,8 @@ class AdsInsightStream(FacebookSDKStream):
                 user_logger.error(f"[{self.name}] An unhandled error occurred: {fb_err}. Stopping execution.")
                 user_logger.exception(f"[{self.name}] An unhandled error occurred: {fb_err}. Stopping execution.")
                 sys.exit(1)
+
+        self._fail_if_nothing_queued(batches_attempted, reports_queued)
 
 
 class AdsInsightHourlyAdvertiserTimezoneStream(AdsInsightStream):
