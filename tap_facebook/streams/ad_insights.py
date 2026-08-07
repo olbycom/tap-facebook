@@ -105,6 +105,8 @@ STANDARD_FIELDS = [
     "account_currency",
     "ad_click_actions",
     "ad_impression_actions",
+    "adset_end",
+    "adset_start",
     "average_purchases_conversion_value",
     "buying_type",
     "canvas_avg_view_percent",
@@ -264,10 +266,19 @@ ATTRIBUTION_FIELDS = [
 ]
 
 # Fields the installed SDK exposes but the Graph API refuses, with the reason it
-# gave when asked (checked against v25.0 for NEKT-4527). They are deliberately in
-# no group: the drift check reports unclassified SDK fields as candidates to
-# adopt, and without this list these 23 would be offered up again on every run.
-# Re-add one only after a live request proves the API now accepts it.
+# gave when asked (checked against v25.0 for NEKT-4527).
+#
+# THE BAR FOR THIS LIST: only fields that NO account can ever get. A field that
+# merely fails for some accounts, some dates or some campaign objectives stays in
+# its group -- the sync drops it at runtime for the accounts that cannot serve it
+# (see _resume_after_rejection), so nobody loses a metric that works for them.
+# `adset_start` / `adset_end` were listed here at first and moved back out for
+# exactly that reason: they are refused only while reading results, and only on
+# some accounts.
+#
+# These are in no group on purpose: the drift check reports unclassified SDK
+# fields as candidates to adopt, and without this list they would be offered up
+# again on every run. Re-add one only after a live request proves the API accepts it.
 REJECTED_FIELDS = {
     "age_targeting": "retired after Graph API v19.0",
     "gender_targeting": "retired after Graph API v19.0",
@@ -277,8 +288,6 @@ REJECTED_FIELDS = {
     "estimated_ad_recall_rate_upper_bound": "retired after Graph API v19.0",
     "estimated_ad_recallers_lower_bound": "retired after Graph API v19.0",
     "estimated_ad_recallers_upper_bound": "retired after Graph API v19.0",
-    "adset_end": "not readable as a summary field when results are fetched",
-    "adset_start": "not readable as a summary field when results are fetched",
     "marketing_messages_website_add_to_cart": "not a valid insights field",
     "marketing_messages_website_initiate_checkout": "not a valid insights field",
     "marketing_messages_website_purchase": "not a valid insights field",
@@ -394,6 +403,14 @@ VALID_GRANULARITIES = {"daily", "monthly"}
 # Graph API error code returned when the `fields` param is not acceptable.
 FIELDS_PARAM_ERROR_CODE = 100
 
+# A job that dies at 0% is usually transient, so only start hunting for a bad
+# field once the same date has failed this many times in a row.
+CONSECUTIVE_FAILURES_BEFORE_BISECT = 3
+
+# Ceiling on how many fields a single run may drop on its own. Past this, the
+# run falls back to BASIC_FIELDS rather than shrinking the schema field by field.
+MAX_AUTO_FIELD_DROPS = 3
+
 # Field names are word tokens, so the rejected ones can be read straight out of
 # the API's own message. Matching whole tokens matters: a substring search for
 # `estimated_ad_recall_rate` also hits `estimated_ad_recall_rate_lower_bound`.
@@ -448,23 +465,42 @@ class AdsInsightStream(FacebookSDKStream):
             return current_date.add(months=1).start_of("month")
         return current_date.add(days=time_increment)
 
-    def _fail_if_nothing_queued(self, batches_attempted: int, reports_queued: int) -> None:
-        """Abort the run when not a single report could be queued.
+    def _reset_run_state(self) -> None:
+        """Clear the per-run bookkeeping the degradation and the floor rely on."""
+        self._rejected_columns: list[str] = []
+        self._restart_from: pendulum.Date | None = None
+        self._auto_drops = 0
+        self._dates_failed = 0
 
-        Returning cleanly would be indistinguishable from "the account has no
-        data for this period", and a full-refresh load reads that as an empty
-        snapshot -- overwriting a populated table with nothing.
+    def _fail_if_nothing_extracted(
+        self,
+        batches_attempted: int,
+        reports_queued: int,
+        records_emitted: int,
+    ) -> None:
+        """Abort the run when nothing was extracted AND something went wrong.
+
+        Both halves matter. Ending cleanly with no records is indistinguishable
+        from "the account had no delivery in this period", and a full-refresh
+        load reads that as an empty snapshot -- overwriting a populated table.
+        But an account that genuinely did not spend anything must still finish
+        green, so a run where every date built fine is never failed here.
         """
-        if not batches_attempted or reports_queued:
+        if not batches_attempted or records_emitted:
+            return
+        if not self._dates_failed and reports_queued:
+            # Every date built and returned nothing: the account really is empty.
             return
 
         user_logger.error(
-            f"[{self.name}] Facebook refused every report request in this run, so no data could be "
-            "extracted. The existing data was left untouched. Please contact Nekt support."
+            f"[{self.name}] No data could be extracted in this run and {self._dates_failed} date(s) failed, "
+            "so the existing data was left untouched rather than replaced with an empty result. "
+            "Please contact Nekt support."
         )
         internal_logger.error(
-            f"[{self.name}] {batches_attempted} batch(es) attempted, 0 reports queued; failing the run "
-            "so the loader does not overwrite the table with an empty snapshot."
+            f"[{self.name}] {batches_attempted} batch(es) attempted, {reports_queued} report(s) queued, "
+            f"{self._dates_failed} date(s) failed, 0 records emitted; failing the run so the loader does "
+            "not overwrite the table with an empty snapshot."
         )
         sys.exit(1)
 
@@ -853,8 +889,16 @@ class AdsInsightStream(FacebookSDKStream):
         date: pendulum.Date,
         columns: list[str],
         time_increment: int | str,
+        *,
+        quiet: bool = False,
     ) -> str | None:
-        """Create a single async report job. Returns report_run_id or None on failure."""
+        """Create a single async report job. Returns report_run_id or None on failure.
+
+        `quiet` keeps the customer-facing log clean while the sync is probing
+        field subsets: those jobs are diagnostics, not work the customer asked
+        for, so their failures belong on the internal channel only.
+        """
+        channel = internal_logger if quiet else user_logger
         params = {
             "level": self.report_level,
             "action_breakdowns": self.config.get("report_definition", {}).get("action_breakdowns"),
@@ -876,10 +920,116 @@ class AdsInsightStream(FacebookSDKStream):
             self._check_facebook_api_usage(headers=response._headers)
             if response.status() == HTTPStatus.OK:
                 return response.json()["report_run_id"]
-            user_logger.warning(f"[{self.name}] Failed to queue retry report for {date}")
+            channel.warning(f"[{self.name}] Failed to queue retry report for {date}")
         except FacebookRequestError as fb_err:
-            user_logger.warning(f"[{self.name}] Error queueing retry report for {date}: {fb_err.api_error_message()}")
+            channel.warning(f"[{self.name}] Error queueing retry report for {date}: {fb_err.api_error_message()}")
         return None
+
+    def _job_completes_with(
+        self,
+        date_obj: pendulum.Date,
+        columns: list[str],
+        time_increment: int | str,
+    ) -> bool:
+        """Ask Facebook to build one report with `columns` and say whether it survived."""
+        report_run_id = self._create_single_report(date_obj, columns, time_increment, quiet=True)
+        if not report_run_id:
+            return False
+        job = self._run_job_to_completion(
+            report_instance=AdReportRun(report_run_id),
+            report_date=date_obj.to_date_string(),
+            quiet=True,
+        )
+        return isinstance(job, AdReportRun)
+
+    def _bisect_failing_columns(
+        self,
+        date_obj: pendulum.Date,
+        columns: list[str],
+        time_increment: int | str,
+    ) -> list[str]:
+        """Find which optional column makes the report job die, by halving.
+
+        Facebook says nothing useful when a job fails -- no field name, no
+        reason, just 0%. So the only way to learn which column is at fault is to
+        ask again with fewer of them. The search stays inside the optional
+        groups: BASIC_FIELDS is the contract every source depends on, and if it
+        alone cannot be built then no amount of dropping will help.
+
+        Returns the offending column, or an empty list when the cause is not a
+        single optional field (the caller then falls back to BASIC_FIELDS).
+        """
+        basic = [column for column in columns if column in set(BASIC_FIELDS)]
+        suspects = [column for column in columns if column not in set(BASIC_FIELDS)]
+        if not suspects:
+            return []
+
+        date_str = date_obj.to_date_string()
+        internal_logger.info(
+            f"[{self.name}] Bisecting {len(suspects)} optional column(s) on {date_str} to find what "
+            "makes the report job fail."
+        )
+
+        if not self._job_completes_with(date_obj, basic, time_increment):
+            internal_logger.warning(
+                f"[{self.name}] BASIC_FIELDS alone also fails for {date_str}; the job failure is not "
+                "caused by an optional field. Leaving the field set untouched."
+            )
+            return []
+
+        probes = 1
+        while len(suspects) > 1:
+            half = suspects[: len(suspects) // 2]
+            probes += 1
+            # Only the first half needs a probe: with a single culprit, a half
+            # that builds means the culprit is in the other one. Two culprits
+            # simply cost a second bisect once the first has been dropped.
+            suspects = suspects[len(half) :] if self._job_completes_with(date_obj, basic + half, time_increment) else half
+
+        probes += 1
+        if not self._job_completes_with(date_obj, [c for c in columns if c not in set(suspects)], time_increment):
+            internal_logger.warning(
+                f"[{self.name}] Dropping {suspects} did not make {date_str} build after {probes} probe(s); "
+                "the failure is an interaction between fields, not one field."
+            )
+            return []
+
+        internal_logger.info(f"[{self.name}] Bisect isolated '{suspects[0]}' on {date_str} after {probes} probe(s).")
+        return suspects
+
+    def _drop_columns_failing_the_job(
+        self,
+        date_obj: pendulum.Date,
+        columns: list[str],
+        time_increment: int | str,
+    ) -> bool:
+        """Take the column(s) that keep killing this date out of the request.
+
+        Returns True when the caller should stop and let the sync resume from
+        this date with a narrower set. A repeated job failure is otherwise a dead
+        end: the tap re-sends the identical request ten times, a minute apart,
+        and the date is lost anyway -- which is what stalled entire syncs before.
+        """
+        if self._auto_drops >= MAX_AUTO_FIELD_DROPS:
+            return False
+
+        dropped = self._bisect_failing_columns(date_obj, columns, time_increment)
+        if not dropped:
+            # Not one field, or not a field at all. Fall back to the contract set
+            # once, so the run still delivers the core metrics for every date.
+            optional = [column for column in columns if column not in set(BASIC_FIELDS)]
+            if not optional:
+                return False
+            dropped = optional
+            internal_logger.warning(
+                f"[{self.name}] Could not isolate a single column for {date_obj.to_date_string()}; "
+                f"falling back to BASIC_FIELDS by dropping {len(optional)} optional column(s)."
+            )
+
+        self._auto_drops += 1
+        self._rejected_columns = dropped
+        self._restart_from = date_obj
+        return True
 
     def _process_report_batch(
         self,
@@ -905,6 +1055,7 @@ class AdsInsightStream(FacebookSDKStream):
             report_run_id = report_info["report_run_id"]
             report_date = report_info["date"]
             date_obj = report_info["date_obj"]
+            job_failures = 0
 
             for attempt in range(max_retries + 1):
                 if attempt > 0:
@@ -921,6 +1072,11 @@ class AdsInsightStream(FacebookSDKStream):
                     report_date=report_date,
                 )
                 if not isinstance(job, AdReportRun):
+                    job_failures += 1
+                    if job_failures >= CONSECUTIVE_FAILURES_BEFORE_BISECT and self._drop_columns_failing_the_job(
+                        date_obj, columns, time_increment
+                    ):
+                        return
                     continue
 
                 try:
@@ -952,20 +1108,37 @@ class AdsInsightStream(FacebookSDKStream):
                         f"[{self.name}] Error reading results for {report_date} (attempt {attempt}/{max_retries}): {e}. Retrying..."
                     )
             else:
+                # End of the ladder for this date:
+                #   job fails -> retry
+                #   -> CONSECUTIVE_FAILURES_BEFORE_BISECT in a row: bisect, drop the
+                #      offending column, resume the date with a narrower set
+                #   -> still failing after max_retries: give up on the date (here)
+                #      -> fail_on_job_error=True: stop the run now (strict; the
+                #         customer prefers no data over a gap in the history)
+                #      -> default: skip the date and keep going
+                #   -> end of run: _fail_if_nothing_extracted is the floor that
+                #      keeps an all-failed run from overwriting the table with an
+                #      empty snapshot.
+                self._dates_failed += 1
                 msg = (
                     f"[{self.name}] Insights report job failed for {report_date} after {max_retries} retries. "
                     "Data for this date was not extracted. See logs above for the specific error."
                 )
+                user_logger.error(msg)
                 if fail_on_error:
-                    user_logger.error(msg)
                     sys.exit(1)
-                else:
-                    user_logger.error(msg)
 
-    def _run_job_to_completion(self, report_instance: AdReportRun, report_date: str) -> th.Any:
+    def _run_job_to_completion(
+        self,
+        report_instance: AdReportRun,
+        report_date: str,
+        *,
+        quiet: bool = False,
+    ) -> th.Any:
         status = None
         time_start = time.time()
         max_wait = self.config.get("insights_max_wait_to_finish_seconds", DEFAULT_INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS)
+        channel = internal_logger if quiet else user_logger
 
         while status != "Job Completed":
             duration = time.time() - time_start
@@ -974,23 +1147,21 @@ class AdsInsightStream(FacebookSDKStream):
             percent_complete = job[AdReportRun.Field.async_percent_completion]
 
             job_id = job["id"]
-            user_logger.info(f"[{self.name}] ID: {job_id} - {status} for {report_date} - {percent_complete}% done. ")
+            channel.info(f"[{self.name}] ID: {job_id} - {status} for {report_date} - {percent_complete}% done. ")
 
             if status == "Job Completed":
                 return job
             if status == "Job Failed":
-                user_logger.error(
-                    f"[{self.name}] Insights job {job_id} failed for {report_date}. " + JOB_STALE_ERROR_MESSAGE
-                )
+                channel.error(f"[{self.name}] Insights job {job_id} failed for {report_date}. " + JOB_STALE_ERROR_MESSAGE)
                 return
             if duration > INSIGHTS_MAX_WAIT_TO_START_SECONDS and percent_complete == 0:
-                user_logger.error(
+                channel.error(
                     f"[{self.name}] Insights job {job_id} did not start after {duration:.0f} seconds for {report_date}. "
                     + JOB_STALE_ERROR_MESSAGE
                 )
                 return
             if duration > max_wait:
-                user_logger.error(
+                channel.error(
                     f"[{self.name}] Insights job {job_id} did not complete after {max_wait}s for {report_date}. "
                     f"To fix this, increase 'insights_max_wait_to_finish_seconds' in the tap config (current: {max_wait}s)."
                 )
@@ -1009,6 +1180,18 @@ class AdsInsightStream(FacebookSDKStream):
         # pop ID, since it's auto-generated
         if "id" in columns:
             columns.remove("id")
+
+        # Fields the source was told to stop asking for. They stay in the schema
+        # so the column does not disappear from the warehouse -- it just arrives
+        # empty. This is the manual counterpart of the automatic drop: once a
+        # field is known to break an account, listing it here saves the sync from
+        # rediscovering it on every run.
+        excluded = set(self.config.get("insights_excluded_fields") or [])
+        if excluded:
+            internal_logger.info(
+                f"[{self.name}] {len(excluded)} field(s) excluded by configuration: {', '.join(sorted(excluded))}"
+            )
+            columns = [column for column in columns if column not in excluded]
 
         # don't pass along columns that are part of breakdowns
         return [column for column in columns if column not in self.report_breakdowns]
@@ -1090,10 +1273,10 @@ class AdsInsightStream(FacebookSDKStream):
 
         retry_count = 0
         batch_size = self.config.get("ad_insights_report_batch_size") or 30
-        self._rejected_columns = []
-        self._restart_from = None
+        self._reset_run_state()
         batches_attempted = 0
         reports_queued = 0
+        records_emitted = 0
 
         # Use batch processing for parallel report creation
         while report_date <= sync_end_date:
@@ -1128,6 +1311,7 @@ class AdsInsightStream(FacebookSDKStream):
 
                 # Process all reports in the batch
                 for record in self._process_report_batch(batch_reports, columns, time_increment):
+                    records_emitted += 1
                     yield record
 
                 if self._rejected_columns:
@@ -1163,7 +1347,7 @@ class AdsInsightStream(FacebookSDKStream):
                 user_logger.exception(f"[{self.name}] An unhandled error occurred: {fb_err}. Stopping execution.")
                 sys.exit(1)
 
-        self._fail_if_nothing_queued(batches_attempted, reports_queued)
+        self._fail_if_nothing_extracted(batches_attempted, reports_queued, records_emitted)
 
 
 class AdsInsightHourlyAdvertiserTimezoneStream(AdsInsightStream):

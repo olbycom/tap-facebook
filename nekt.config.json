@@ -423,6 +423,19 @@
             "docs_url": "https://docs.nekt.com/sources/facebook-ads#ad-insights",
             "description": "Adds results, cost per result and objective result metrics to Ads Insights. Only enable if your campaign objectives report these metrics -- Facebook may reject the request otherwise."
           },
+          "insights_excluded_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "order": 26,
+            "title": "Ads Insights: metrics to exclude",
+            "default": [],
+            "el_type": "extractor",
+            "advanced_settings": true,
+            "docs_url": "https://docs.nekt.com/sources/facebook-ads#ad-insights",
+            "description": "Metric names Facebook cannot serve for this ad account. Facebook rejects an entire report when one metric does not apply to the account, so the extraction detects and drops those on its own -- listing them here only makes it permanent and slightly faster. The columns remain in the table and arrive empty."
+          },
           "include_insights_attribution_fields": {
             "type": "boolean",
             "order": 25,

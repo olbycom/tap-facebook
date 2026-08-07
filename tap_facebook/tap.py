@@ -388,6 +388,18 @@ class TapFacebook(Tap):
             ),
         ),
         th.Property(
+            "insights_excluded_fields",
+            th.ArrayType(th.StringType),
+            default=[],
+            description=(
+                "Ads Insights metrics to stop requesting for this account. Facebook refuses some "
+                "metrics depending on the account's campaign objectives or product access, and it "
+                "rejects the whole report rather than the single metric. The tap detects and drops "
+                "those automatically; listing them here makes the exclusion permanent and saves the "
+                "detection on every run. The columns stay in the schema and arrive empty."
+            ),
+        ),
+        th.Property(
             "fail_on_job_error",
             th.BooleanType,
             default=False,
