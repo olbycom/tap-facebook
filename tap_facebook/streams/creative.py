@@ -68,6 +68,102 @@ ADVANCED_FIELDS = [
     "video_id",
 ]
 
+# Requested from the API in every mode purely to derive `destination_url` and
+# `destination_type`. Facebook has no flat "final URL" field: the landing page
+# lives inside these nested specs, and which one carries it depends on the ad
+# format. They are never emitted as columns — `get_records` flattens them and
+# drops the raw payload, so no nested arrays reach the warehouse.
+DESTINATION_SOURCE_FIELDS = [
+    "object_story_spec",
+    "asset_feed_spec",
+]
+
+DESTINATION_TYPE_WEBSITE = "website"
+DESTINATION_TYPE_LEAD_FORM = "lead_form"
+DESTINATION_TYPE_FACEBOOK_PAGE = "facebook_page"
+
+# Facebook returns this placeholder as the `link` of lead ads that send people
+# to a native lead form rather than to a website.
+PLACEHOLDER_LINKS = frozenset({"http://fb.me/", "https://fb.me/"})
+
+
+def _clean_url(value: object) -> str | None:
+    """Return the value as a usable destination URL, or None if it is not one."""
+    if not isinstance(value, str):
+        return None
+    url = value.strip()
+    if not url or url in PLACEHOLDER_LINKS:
+        return None
+    return url
+
+
+def _destination_from_story_data(story_data: object) -> tuple[str | None, str | None]:
+    """Extract (url, type) from a link_data / video_data / photo_data block.
+
+    The lead form is checked before any link because lead ads still carry a
+    placeholder `link`, and reporting that as the landing page would be wrong.
+    """
+    if not isinstance(story_data, dict):
+        return None, None
+
+    call_to_action = story_data.get("call_to_action") or {}
+    cta_value = call_to_action.get("value") or {}
+    if cta_value.get("lead_gen_form_id"):
+        return None, DESTINATION_TYPE_LEAD_FORM
+
+    for candidate in (cta_value.get("link"), story_data.get("link")):
+        url = _clean_url(candidate)
+        if url:
+            return url, DESTINATION_TYPE_WEBSITE
+
+    # Carousel ads may leave the top-level link empty and carry one URL per card;
+    # the first card is the ad's effective destination.
+    for child in story_data.get("child_attachments") or []:
+        url = _clean_url((child or {}).get("link"))
+        if url:
+            return url, DESTINATION_TYPE_WEBSITE
+
+    return None, None
+
+
+def extract_destination(creative: dict) -> tuple[str | None, str | None]:
+    """Flatten a creative's landing page into (destination_url, destination_type).
+
+    Returns (None, None) when neither could be determined — most often an ad
+    built from an existing organic post, where the link lives on the post itself
+    and not on the creative.
+    """
+    asset_feed_spec = creative.get("asset_feed_spec")
+    if isinstance(asset_feed_spec, dict):
+        for link in asset_feed_spec.get("link_urls") or []:
+            url = _clean_url((link or {}).get("website_url"))
+            if url:
+                return url, DESTINATION_TYPE_WEBSITE
+
+    story_spec = creative.get("object_story_spec")
+    if isinstance(story_spec, dict):
+        fallback_type = None
+        for key in ("link_data", "video_data", "photo_data"):
+            url, destination_type = _destination_from_story_data(story_spec.get(key))
+            if url:
+                return url, destination_type
+            fallback_type = fallback_type or destination_type
+        if fallback_type:
+            return None, fallback_type
+
+    # Scalar fallbacks. `template_url` is only requested in advanced mode, so it
+    # is simply absent (not an error) in basic mode.
+    for candidate, destination_type in (
+        (creative.get("template_url"), DESTINATION_TYPE_WEBSITE),
+        (creative.get("object_url"), DESTINATION_TYPE_WEBSITE),
+        (creative.get("link_url"), DESTINATION_TYPE_FACEBOOK_PAGE),
+    ):
+        url = _clean_url(candidate)
+        if url:
+            return url, destination_type
+
+    return None, None
+
 
 class CreativeStream(Stream):
     """Facebook Ad Creative stream using child context from AdsStream.
@@ -89,11 +185,10 @@ class CreativeStream(Stream):
         """Get columns based on creative_fields_mode configuration."""
         fields_mode = self.config.get("creative_fields_mode", "basic")
 
-        if fields_mode == "basic":
-            return BASIC_FIELDS
-        if fields_mode == "advanced":
-            return ADVANCED_FIELDS
-        return BASIC_FIELDS
+        fields = ADVANCED_FIELDS if fields_mode == "advanced" else BASIC_FIELDS
+        # Requested in both modes: destination_url is useless if it only works
+        # for sources that opted into advanced mode.
+        return [*fields, *DESTINATION_SOURCE_FIELDS]
 
     schema = PropertiesList(
         Property(
@@ -312,6 +407,28 @@ class CreativeStream(Stream):
             description="ID of the video used in the creative",
         ),
         Property(
+            "destination_url",
+            StringType,
+            description=(
+                "Landing page the ad sends people to, flattened from the "
+                "creative's object_story_spec or asset_feed_spec. Null when the "
+                "ad has no website destination — check destination_type to tell "
+                "that apart from missing data."
+            ),
+        ),
+        Property(
+            "destination_type",
+            StringType,
+            description=(
+                "What the ad sends people to: 'website' (destination_url holds "
+                "the landing page), 'lead_form' (a native Meta lead form, so "
+                "there is no URL), or 'facebook_page' (a tab of the advertiser's "
+                "Facebook page). Null when it could not be determined, which is "
+                "typically an ad built from an existing organic post, where the "
+                "link belongs to the post and not to the creative."
+            ),
+        ),
+        Property(
             "ad_id",
             StringType,
             description="ID of the parent ad (from context)",
@@ -343,5 +460,13 @@ class CreativeStream(Stream):
             "ad_id": context.get("ad_id"),
             "ad_updated_time": context.get("ad_updated_time"),
         }
+
+        destination_url, destination_type = extract_destination(creative_data)
+        # Drop the raw specs: they exist only to feed the two fields above, and
+        # emitting them would add nested arrays to the stream's output.
+        for field in DESTINATION_SOURCE_FIELDS:
+            creative_data.pop(field, None)
+        creative_data["destination_url"] = destination_url
+        creative_data["destination_type"] = destination_type
 
         yield creative_data
