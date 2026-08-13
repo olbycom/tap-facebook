@@ -626,7 +626,7 @@ class AdsStream(IncrementalFacebookStream):
         if "creatives" in self._tap.streams:
             creative_stream: CreativeStream = self._tap.streams["creatives"]
             columns = creative_stream.columns
-        fields = ",".join([*columns, "id"])
+        fields = ",".join(dict.fromkeys([*columns, "id"]))
         thumbnail_width = self.config.get("creative_thumbnail_width", 1024)
         thumbnail_height = self.config.get("creative_thumbnail_height", 1024)
 
