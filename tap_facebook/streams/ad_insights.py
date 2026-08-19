@@ -388,6 +388,13 @@ HISTOGRAM_STATS_FIELDS = [
 POLL_JOB_SLEEP_TIME = 5
 AD_REPORT_RETRY_TIME = 2 * 60
 AD_REPORT_INCREMENT_SLEEP_TIME = 1
+
+# Meta occasionally answers a poll with a non-JSON body (e.g. an edge/CDN error
+# page); the facebook-business SDK treats it as a success and crashes inside its
+# parser instead of raising a FacebookRequestError. Give up on the job instance
+# after this many consecutive unreadable polls and let the report-retry ladder
+# in _process_report_batch recreate it.
+MAX_CONSECUTIVE_POLL_FAILURES = 5
 INSIGHTS_MAX_WAIT_TO_START_SECONDS = 5 * 60
 DEFAULT_INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS = 30 * 60
 JOB_STALE_ERROR_MESSAGE = (
@@ -1139,14 +1146,40 @@ class AdsInsightStream(FacebookSDKStream):
         time_start = time.time()
         max_wait = self.config.get("insights_max_wait_to_finish_seconds", DEFAULT_INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS)
         channel = internal_logger if quiet else user_logger
+        consecutive_poll_failures = 0
 
         while status != "Job Completed":
             duration = time.time() - time_start
-            job = report_instance.api_get()
-            status = job[AdReportRun.Field.async_status]
-            percent_complete = job[AdReportRun.Field.async_percent_completion]
-
-            job_id = job["id"]
+            try:
+                job = report_instance.api_get()
+                status = job[AdReportRun.Field.async_status]
+                percent_complete = job[AdReportRun.Field.async_percent_completion]
+                job_id = job["id"]
+            except FacebookRequestError:
+                # Structured API errors (rate limits, auth) keep their existing
+                # handling upstream in get_records.
+                raise
+            except Exception as poll_error:
+                consecutive_poll_failures += 1
+                if consecutive_poll_failures >= MAX_CONSECUTIVE_POLL_FAILURES:
+                    channel.error(
+                        f"[{self.name}] Could not check the insights report status for {report_date} "
+                        "after several attempts. The report will be retried from scratch."
+                    )
+                    internal_logger.error(
+                        f"[{self.name}] Polling api_get() failed {consecutive_poll_failures}x in a row "
+                        f"for {report_date}; giving up on this job instance: {poll_error!r}",
+                        exc_info=True,
+                    )
+                    return None
+                internal_logger.warning(
+                    f"[{self.name}] Unreadable response while polling insights job for {report_date} "
+                    f"(attempt {consecutive_poll_failures}/{MAX_CONSECUTIVE_POLL_FAILURES}): {poll_error!r}",
+                    exc_info=True,
+                )
+                time.sleep(min(POLL_JOB_SLEEP_TIME * consecutive_poll_failures, 60))
+                continue
+            consecutive_poll_failures = 0
             channel.info(f"[{self.name}] ID: {job_id} - {status} for {report_date} - {percent_complete}% done. ")
 
             if status == "Job Completed":
