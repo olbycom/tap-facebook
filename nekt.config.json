@@ -11,6 +11,8 @@
       "discover"
     ]
   },
+  "base_image_type": "base",
+  "python": "3.11",
   "connectors": [
     {
       "connector_slug": "facebook-ads",
