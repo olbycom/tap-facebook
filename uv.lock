@@ -1150,7 +1150,7 @@ dev = [
 requires-dist = [
     { name = "facebook-business", specifier = ">=25.0.0,<26.0.0" },
     { name = "fs-s3fs", marker = "extra == 's3'" },
-    { name = "nekt-singer-sdk", git = "https://github.com/nektcom/singer-sdk.git?rev=v0.23.0" },
+    { name = "nekt-singer-sdk", git = "https://github.com/nektcom/singer-sdk.git?rev=v0.25.1" },
     { name = "pendulum", specifier = ">=3.1.0,<4.0.0" },
     { name = "requests", specifier = "~=2.31.0" },
 ]
@@ -1161,8 +1161,8 @@ dev = [{ name = "pytest", specifier = ">=7.4.1" }]
 
 [[package]]
 name = "nekt-singer-sdk"
-version = "0.23.0"
-source = { git = "https://github.com/nektcom/singer-sdk.git?rev=v0.23.0#e655c3c30388ba59be091081a90a50ff81ca1f31" }
+version = "0.25.1"
+source = { git = "https://github.com/nektcom/singer-sdk.git?rev=v0.25.1#28d8f13622560ec7ec848a74e28c48d3718612a7" }
 dependencies = [
     { name = "boto3" },
     { name = "google-cloud-storage" },

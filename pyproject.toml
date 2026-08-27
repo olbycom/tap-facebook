@@ -17,7 +17,7 @@ dependencies = [
     # tracks the Graph API version the SDK targets, so moving it is a
     # deliberate, tested step rather than something a lock refresh does for us.
     "facebook-business>=25.0.0,<26.0.0",
-    "nekt-singer-sdk @ git+https://github.com/nektcom/singer-sdk.git@v0.23.0",
+    "nekt-singer-sdk @ git+https://github.com/nektcom/singer-sdk.git@v0.25.1",
     "pendulum>=3.1.0,<4.0.0",
     "requests~=2.31.0",
 ]
