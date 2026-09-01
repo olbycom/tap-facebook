@@ -18,8 +18,14 @@ dependencies = [
     # deliberate, tested step rather than something a lock refresh does for us.
     "facebook-business>=25.0.0,<26.0.0",
     "nekt-singer-sdk @ git+https://github.com/nektcom/singer-sdk.git@v0.25.1",
+    # Required by the volume upload used by the creative_files stream: the
+    # singer SDK's VolumeAttachmentMixin imports it lazily so it stays optional
+    # there, which makes it this connector's dependency to declare.
+    "nekt-sdk @ git+https://github.com/nektcom/nekt-sdk-py.git@v0.8.3",
     "pendulum>=3.1.0,<4.0.0",
-    "requests~=2.31.0",
+    # Open upper bound, as in every other connector: the compatible-release pin
+    # (~=2.31.0) capped requests below 2.32 and cannot satisfy nekt-sdk.
+    "requests>=2.31.0",
 ]
 
 [project.optional-dependencies]

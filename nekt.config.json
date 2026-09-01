@@ -447,8 +447,71 @@
             "advanced_settings": true,
             "docs_url": "https://docs.nekt.com/sources/facebook-ads#ad-insights",
             "description": "Adds SKAdNetwork and attribution setting metrics to Ads Insights. Only enable if attribution is configured on the account -- Facebook may reject the request otherwise."
+          },
+          "enable_creative_files_stream": {
+            "type": "boolean",
+            "order": 27,
+            "title": "Enable creative files stream",
+            "default": false,
+            "el_type": "extractor",
+            "advanced_settings": true,
+            "description": "Adds a creative_files stream that downloads each ad creative's image and/or thumbnail from Facebook's CDN and uploads the file to a Nekt volume. Extractions become significantly slower and heavier, since every creative's file is downloaded and re-uploaded. Only enable this if you need the creative files stored in a volume."
+          },
+          "nekt_volume_to_upload_creative_files": {
+            "type": "string",
+            "order": 28,
+            "title": "Creative Files Volume",
+            "format": "volume-picker",
+            "el_type": "extractor",
+            "dependent": "enable_creative_files_stream",
+            "advanced_settings": true,
+            "description": "Nekt volume to upload the creative image files to. Required when the creative files stream is enabled."
+          },
+          "creative_files_to_upload": {
+            "type": "string",
+            "order": 29,
+            "title": "Creative files to upload",
+            "format": "dropdown",
+            "default": "image,thumbnail",
+            "el_type": "extractor",
+            "dependent": "enable_creative_files_stream",
+            "advanced_settings": true,
+            "description": "Which creative files to upload. The image is the full-resolution asset, and the thumbnail is Facebook's downscaled preview -- uploading thumbnails only is much faster and lighter.",
+            "allowed_values": [
+              {
+                "label": "Image and thumbnail",
+                "value": "image,thumbnail"
+              },
+              {
+                "label": "Image only (full resolution)",
+                "value": "image"
+              },
+              {
+                "label": "Thumbnail only",
+                "value": "thumbnail"
+              }
+            ]
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "enable_creative_files_stream": {
+                  "const": true
+                }
+              },
+              "required": [
+                "enable_creative_files_stream"
+              ]
+            },
+            "then": {
+              "required": [
+                "nekt_volume_to_upload_creative_files"
+              ]
+            }
+          }
+        ]
       }
     }
   ]

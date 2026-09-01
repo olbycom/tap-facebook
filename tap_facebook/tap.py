@@ -26,10 +26,12 @@ from tap_facebook.streams import (
     AdVideos,
     CampaignInsightsStream,
     CampaignStream,
+    CreativeFilesStream,
     CreativeStream,
     CustomAudiences,
     CustomConversions,
 )
+from tap_facebook.streams.creative import creative_files_enabled
 
 STREAM_TYPES = [
     AdsInsightStream,
@@ -307,6 +309,37 @@ class TapFacebook(Tap):
             default=1024,
         ),
         th.Property(
+            "enable_creative_files_stream",
+            th.BooleanType,
+            default=False,
+            description=(
+                "When enabled, the tap adds a creative_files stream that downloads each "
+                "ad creative's image and/or thumbnail from Facebook's CDN and uploads it "
+                "to a Nekt volume. This makes extractions significantly slower and "
+                "heavier: every creative's file is downloaded and re-uploaded. Only "
+                "enable this if you need the creative files stored in a Nekt volume."
+            ),
+        ),
+        th.Property(
+            "nekt_volume_to_upload_creative_files",
+            th.StringType,
+            description=(
+                "Nekt volume to upload creative image files to. Required when the "
+                "creative files stream is enabled."
+            ),
+        ),
+        th.Property(
+            "creative_files_to_upload",
+            th.StringType,
+            default="image,thumbnail",
+            description=(
+                "Comma-separated list of which creative files to upload: 'image' "
+                "(image_url, the full-resolution asset) and/or 'thumbnail' "
+                "(thumbnail_url, Facebook's downscaled preview). Defaults to both. "
+                "Only applies when the creative files stream is enabled."
+            ),
+        ),
+        th.Property(
             "ads_page_size",
             th.StringType,
             description=(
@@ -420,6 +453,11 @@ class TapFacebook(Tap):
 
         if self.config.get("enable_campaign_insights", False):
             streams.append(CampaignInsightsStream(tap=self))
+
+        # Child stream of `creatives`; only offered when the user opted in, since
+        # downloading every creative's files is a deliberate, much heavier sync.
+        if creative_files_enabled(self.config):
+            streams.append(CreativeFilesStream(tap=self))
 
         advanced_streams = []
         if self.config.get("enable_advanced_reports", False):

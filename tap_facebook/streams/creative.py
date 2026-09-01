@@ -16,6 +16,11 @@ from nekt_singer_sdk.typing import (
 
 from tap_facebook.streams.ads import AdsStream
 
+if t.TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from nekt_singer_sdk.helpers.types import Context
+
 # Field sets for different extraction modes
 BASIC_FIELDS = [
     "account_id",
@@ -85,6 +90,46 @@ DESTINATION_TYPE_FACEBOOK_PAGE = "facebook_page"
 # Facebook returns this placeholder as the `link` of lead ads that send people
 # to a native lead form rather than to a website.
 PLACEHOLDER_LINKS = frozenset({"http://fb.me/", "https://fb.me/"})
+
+# Settings of the `creative_files` child stream (see streams/creative_files.py).
+# They are declared here because this stream owns the two URL fields that stream
+# downloads, and has to request them from the Graph API on its behalf.
+CREATIVE_FILES_ENABLE_CONFIG_KEY = "enable_creative_files_stream"
+CREATIVE_FILES_VOLUME_CONFIG_KEY = "nekt_volume_to_upload_creative_files"
+CREATIVE_FILES_TO_UPLOAD_CONFIG_KEY = "creative_files_to_upload"
+
+# Which creative field each selectable file kind is downloaded from. Iteration
+# order is the emission order of the child stream's records.
+CREATIVE_FILE_SOURCE_FIELDS = {
+    "image": "image_url",
+    "thumbnail": "thumbnail_url",
+}
+
+
+def creative_files_enabled(config: Mapping[str, t.Any]) -> bool:
+    """Whether the user opted into uploading creative files to a Nekt volume.
+
+    Only the switch is checked here: the destination volume and the Nekt access
+    token are validated by the upload mixin at sync time, which warns the user
+    when either is missing. Keeping the check to the switch means the stream
+    still appears in the catalog (and its fields are still requested) in an
+    environment where the token is not set, e.g. during discovery.
+    """
+    return bool(config.get(CREATIVE_FILES_ENABLE_CONFIG_KEY))
+
+
+def selected_creative_file_sources(config: Mapping[str, t.Any]) -> list[str]:
+    """The creative file kinds to upload, as keys of CREATIVE_FILE_SOURCE_FIELDS.
+
+    Accepts a comma-separated list so the setting can grow a value without
+    becoming a new setting. An empty/absent value means "all of them"; a value
+    that matches nothing returns an empty list, which the child stream reports.
+    """
+    raw = str(config.get(CREATIVE_FILES_TO_UPLOAD_CONFIG_KEY) or "").strip()
+    if not raw:
+        return list(CREATIVE_FILE_SOURCE_FIELDS)
+    requested = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    return [source for source in CREATIVE_FILE_SOURCE_FIELDS if source in requested]
 
 
 def _clean_url(value: object) -> str | None:
@@ -180,6 +225,14 @@ class CreativeStream(Stream):
     parent_stream_type = AdsStream
     state_partitioning_keys = []
 
+    def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
+        """Initialize the stream and the per-run creative dedupe set."""
+        super().__init__(*args, **kwargs)
+        # The same creative is attached to many ads, so this stream emits it once
+        # per ad. Child contexts are deduped by creative id to download each
+        # creative's files only once per extraction.
+        self._creative_ids_with_files: set[str] = set()
+
     @property
     def columns(self) -> list[str]:
         """Get columns based on creative_fields_mode configuration."""
@@ -188,7 +241,19 @@ class CreativeStream(Stream):
         fields = ADVANCED_FIELDS if fields_mode == "advanced" else BASIC_FIELDS
         # Requested in both modes: destination_url is useless if it only works
         # for sources that opted into advanced mode.
-        return [*fields, *DESTINATION_SOURCE_FIELDS]
+        extra_fields = [*DESTINATION_SOURCE_FIELDS]
+        # The image URLs the `creative_files` stream downloads only belong to the
+        # advanced field set, so opting into the upload also opts into requesting
+        # them -- otherwise the stream would silently upload nothing on the
+        # default (basic) mode.
+        if creative_files_enabled(self.config):
+            extra_fields += [
+                CREATIVE_FILE_SOURCE_FIELDS[source]
+                for source in selected_creative_file_sources(self.config)
+            ]
+        # Advanced mode already asks for the image URLs; Facebook rejects a
+        # repeated field in the `fields` expansion.
+        return list(dict.fromkeys([*fields, *extra_fields]))
 
     schema = PropertiesList(
         Property(
@@ -470,3 +535,33 @@ class CreativeStream(Stream):
         creative_data["destination_type"] = destination_type
 
         yield creative_data
+
+    def get_child_context(
+        self,
+        record: dict,
+        context: Context | None = None,  # noqa: ARG002
+    ) -> dict | None:
+        """Feed the creative's image URLs to the creative_files child stream.
+
+        Returns None (skipping the child) unless the upload was enabled, this
+        creative was not already handled in this extraction, and it carries at
+        least one of the URLs -- so the common skipped cases cost nothing.
+        """
+        if not creative_files_enabled(self.config):
+            return None
+        creative_id = record.get("id")
+        if not creative_id or creative_id in self._creative_ids_with_files:
+            return None
+        urls = {
+            field: record.get(field)
+            for field in CREATIVE_FILE_SOURCE_FIELDS.values()
+        }
+        if not any(urls.values()):
+            return None
+        self._creative_ids_with_files.add(creative_id)
+        return {
+            "creative_id": creative_id,
+            "ad_id": record.get("ad_id"),
+            "ad_updated_time": record.get("ad_updated_time"),
+            **urls,
+        }
