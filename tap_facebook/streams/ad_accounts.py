@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import typing as t
+from http import HTTPStatus
 
+from facebook_business.adobjects.adaccount import AdAccount
+from nekt_singer_sdk.custom_logger import internal_logger, user_logger
 from nekt_singer_sdk.streams.core import REPLICATION_INCREMENTAL
 from nekt_singer_sdk.typing import (
     ArrayType,
@@ -18,6 +21,22 @@ from nekt_singer_sdk.typing import (
 from singer_sdk.typing import DateTimeType
 
 from tap_facebook.client import API_VERSION, FacebookStream
+
+if t.TYPE_CHECKING:
+    import requests
+
+# Field names the Graph API accepts on a direct ``GET /act_{id}``. The edge
+# listing (``/me/adaccounts``) silently drops unknown names, but an object read
+# rejects the whole request with "(#100) Tried accessing nonexisting field".
+# Several EXTENDED_COLUMNS are flattened names of nested objects
+# (agency_client_declaration_*, business_manager_*, extended_credit_invoice_group_*)
+# that the API has never returned; they stay in the schema for compatibility and
+# are simply not requested on the direct read.
+GRAPH_AD_ACCOUNT_FIELDS: frozenset[str] = frozenset(
+    value
+    for name, value in vars(AdAccount.Field).items()
+    if not name.startswith("_") and isinstance(value, str)
+)
 
 # Basic columns - core fields that work with limited permissions
 BASIC_COLUMNS = [
@@ -398,19 +417,28 @@ EXTENDED_SCHEMA_PROPERTIES = [
 
 
 class AdAccountsStream(FacebookStream):
-    """https://developers.facebook.com/docs/graph-api/reference/user/accounts/."""
+    """Ad accounts visible to the connection.
 
-    """
-    columns: columns which will be added to fields parameter in api
-    name: stream name
-    account_id: facebook account
-    path: path which will be added to api url in client.py
-    schema: instream schema
-    tap_stream_id = stream id
+    https://developers.facebook.com/docs/graph-api/reference/user/accounts/
+
+    Two sources are merged into one stream:
+
+    1. The ad account configured on the source (``config.account_id``), fetched
+       directly with ``GET /act_{account_id}``. This is the account every other
+       stream extracts, so it must always be present in the table.
+    2. ``GET /me/adaccounts`` — every ad account the token user can see. This is
+       the historical behaviour; it is kept so existing tables do not lose rows.
+
+    ``/me/adaccounts`` lists the accounts of the *user* who connected, and the
+    configured account is not guaranteed to be among them (agency users often
+    reach client accounts through a Business Manager). Before the direct fetch,
+    such sources ended up with every other account of that user in the table
+    and without the one they were configured for (NEKT-5001).
     """
 
     @property
     def url_base(self) -> str:
+        """``/me`` — the listing endpoint is scoped to the token user."""
         return f"https://graph.facebook.com/{API_VERSION}/me"
 
     @property
@@ -444,11 +472,111 @@ class AdAccountsStream(FacebookStream):
             properties = BASIC_SCHEMA_PROPERTIES + EXTENDED_SCHEMA_PROPERTIES
         return PropertiesList(*properties).to_dict()
 
+    def _build_configured_account_request(
+        self,
+        columns: list[str],
+    ) -> requests.PreparedRequest:
+        """Build ``GET /act_{account_id}?fields=...`` for the configured account.
+
+        Only names the Graph API knows are requested — see GRAPH_AD_ACCOUNT_FIELDS.
+        """
+        account_id = self.config["account_id"]
+        requested = [c for c in columns if c in GRAPH_AD_ACCOUNT_FIELDS]
+        dropped = len(columns) - len(requested)
+        if dropped:
+            internal_logger.debug(
+                f"[{self.name}] act_{account_id}: not requesting {dropped} column(s) "
+                "that are not Graph API ad account fields."
+            )
+        return self.build_prepared_request(
+            method="GET",
+            url=f"https://graph.facebook.com/{API_VERSION}/act_{account_id}",
+            params={"fields": ",".join(requested)},
+            headers=self.http_headers,
+        )
+
+    def _is_non_retriable_client_error(self, response: requests.Response) -> bool:
+        """True for a 4xx the base class would not retry (typically permissions)."""
+        status = response.status_code
+        if not (HTTPStatus.BAD_REQUEST <= status < HTTPStatus.INTERNAL_SERVER_ERROR):
+            return False
+        content = str(response.content).lower()
+        if "too many calls" in content or "request limit reached" in content:
+            return False
+        return not self._is_transient_error(response)
+
+    def _fetch_configured_account(self, context: dict | None) -> dict:
+        """Fetch the configured ad account as a single record.
+
+        In ``extended`` mode the request asks for finance/owner fields that need
+        elevated permissions on the account. If Facebook rejects that request
+        with a client error, retry once with the ``basic`` field set so the row
+        still lands in the table. Any other failure goes through the regular
+        ``_request`` path (backoff on retriable errors, exit on client errors).
+        """
+        account_id = self.config["account_id"]
+        prepared = self._build_configured_account_request(self.columns)
+        internal_logger.info(
+            f"[{self.name}] Fetching configured account act_{account_id} directly "
+            f"(fields_mode={self.fields_mode}, {len(self.columns)} fields)."
+        )
+        response = self.requests_session.send(prepared, timeout=self.timeout)
+
+        if (
+            response.status_code != HTTPStatus.OK
+            and self.fields_mode == "extended"
+            and self._is_non_retriable_client_error(response)
+        ):
+            user_logger.warning(
+                f"[{self.name}] Facebook did not allow the extended fields (payment "
+                f"method, owner, tax id) for ad account {account_id}. The account was "
+                "extracted with the basic fields only, so those extended columns will "
+                "be empty for it. Grant the connected user finance access on the "
+                "account, or set 'Ad Accounts Fields Mode' to 'basic' to silence this "
+                "warning."
+            )
+            internal_logger.warning(
+                f"[{self.name}] act_{account_id} extended fetch failed with "
+                f"{response.status_code}; retrying with BASIC_COLUMNS. "
+                f"body={str(response.content)[:500]}"
+            )
+            prepared = self._build_configured_account_request(BASIC_COLUMNS)
+            response = None
+
+        if response is None or response.status_code != HTTPStatus.OK:
+            # Standard handling: backoff on retriable errors, stop on client errors.
+            response = self.request_decorator(self._request)(prepared, context)
+
+        record = response.json()
+        internal_logger.info(
+            f"[{self.name}] Configured account act_{account_id} fetched "
+            f"(is_prepay_account={record.get('is_prepay_account')}, "
+            f"{len(record)} fields)."
+        )
+        return record
+
+    def request_records(self, context: dict | None) -> t.Iterable[dict]:
+        """Yield the configured account first, then the token user's other accounts."""
+        account_id = str(self.config["account_id"])
+        yield self._fetch_configured_account(context)
+
+        skipped = 0
+        for record in super().request_records(context):
+            if str(record.get("account_id")) == account_id:
+                skipped += 1
+                continue
+            yield record
+        internal_logger.debug(
+            f"[{self.name}] /me/adaccounts listing done; skipped {skipped} "
+            f"duplicate(s) of the configured account act_{account_id}."
+        )
+
     def post_process(
         self,
         row: dict,
         context: dict | None = None,  # noqa: ARG002
     ) -> dict | None:
+        """Cast the monetary amounts Facebook returns as strings to integers (cents)."""
         row["amount_spent"] = int(row["amount_spent"]) if "amount_spent" in row else None
         row["balance"] = int(row["balance"]) if "balance" in row else None
         row["min_campaign_group_spend_cap"] = (
