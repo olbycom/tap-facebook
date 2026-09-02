@@ -111,6 +111,7 @@ EXTENDED_COLUMNS = [
     "media_agency",
     "partner",
     "salesforce_invoice_group_id",
+    "funding_source",
     "funding_source_details",
 ]
 
@@ -359,6 +360,14 @@ EXTENDED_SCHEMA_PROPERTIES = [
         "salesforce_invoice_group_id",
         StringType,
         description="Salesforce invoice group ID",
+    ),
+    Property(
+        "funding_source",
+        StringType,
+        description=(
+            "ID of the payment method funding this ad account. Empty when the account has no "
+            "payment method (ads can be created but get no delivery) or when the account is disabled."
+        ),
     ),
     Property(
         "funding_source_details",
