@@ -38,6 +38,15 @@ GRAPH_AD_ACCOUNT_FIELDS: frozenset[str] = frozenset(
     if not name.startswith("_") and isinstance(value, str)
 )
 
+
+class _ExtendedFieldsRejected(Exception):  # noqa: N818
+    """Facebook refused a request because of the extended ad account fields.
+
+    Raised in place of the base class' ``sys.exit(1)`` so the caller can repeat
+    the same request with ``BASIC_COLUMNS`` instead of killing the run.
+    """
+
+
 # Basic columns - core fields that work with limited permissions
 BASIC_COLUMNS = [
     "account_id",
@@ -436,6 +445,16 @@ class AdAccountsStream(FacebookStream):
     and without the one they were configured for (NEKT-5001).
     """
 
+    def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
+        """Initialise the stream with the ad account field downgrade flags."""
+        super().__init__(*args, **kwargs)
+        # Set once Facebook refuses the extended field set, so every later
+        # request in this run asks for BASIC_COLUMNS only.
+        self._downgraded_to_basic = False
+        # Set only while the /me/adaccounts listing is being started, so a
+        # permission error there becomes a basic-field retry instead of an exit.
+        self._listing_intercept_armed = False
+
     @property
     def url_base(self) -> str:
         """``/me`` — the listing endpoint is scoped to the token user."""
@@ -449,7 +468,7 @@ class AdAccountsStream(FacebookStream):
     @property
     def columns(self) -> list[str]:  # noqa: RUF012
         """Get columns based on the configured fields mode."""
-        if self.fields_mode == "basic":
+        if self.fields_mode == "basic" or self._downgraded_to_basic:
             return BASIC_COLUMNS
         return BASIC_COLUMNS + EXTENDED_COLUMNS
 
@@ -555,13 +574,70 @@ class AdAccountsStream(FacebookStream):
         )
         return record
 
+    def validate_response(self, response: requests.Response) -> None:
+        """Turn a rejected extended listing into a retry signal.
+
+        The base class exits the process on a non-retriable 4xx. While the
+        ad accounts listing is being started that is too harsh: the request can
+        simply be repeated with the basic field set, which is what Facebook
+        accepts. Outside that window the regular handling applies.
+        """
+        if (
+            self._listing_intercept_armed
+            and response.status_code != HTTPStatus.OK
+            and self._is_non_retriable_client_error(response)
+        ):
+            raise _ExtendedFieldsRejected(str(response.content)[:500])
+        super().validate_response(response)
+
+    def _listing_records(self, context: dict | None) -> t.Iterable[dict]:
+        """Iterate ``/me/adaccounts``, downgrading to basic fields if refused.
+
+        The extended field set (owner, tax id, business manager, funding
+        source) is what Facebook answers with "(#200) Requires
+        business_management permission"; the same token lists the accounts
+        fine with the basic set. Without this the whole source dies on a
+        metadata stream (NEKT-5141).
+
+        Only the first page can trigger the downgrade — once a record has been
+        emitted, restarting the listing would duplicate it, so a later failure
+        follows the regular path.
+        """
+        self._listing_intercept_armed = (
+            self.fields_mode == "extended" and not self._downgraded_to_basic
+        )
+        try:
+            for record in super().request_records(context):
+                self._listing_intercept_armed = False
+                yield record
+        except _ExtendedFieldsRejected as rejection:
+            self._downgraded_to_basic = True
+            user_logger.warning(
+                f"[{self.name}] Facebook did not allow the extended fields (payment "
+                "method, owner, tax id) when listing the ad accounts of the connected "
+                "user. They were extracted with the basic fields only, so those "
+                "extended columns will be empty for them. Grant the connected user "
+                "finance access on the accounts, or set 'Ad accounts fields to "
+                "extract' to 'Basic' to silence this warning."
+            )
+            internal_logger.warning(
+                f"[{self.name}] /me/adaccounts extended listing rejected; restarting "
+                f"it with BASIC_COLUMNS. body={rejection}"
+            )
+        else:
+            return
+        finally:
+            self._listing_intercept_armed = False
+
+        yield from super().request_records(context)
+
     def request_records(self, context: dict | None) -> t.Iterable[dict]:
         """Yield the configured account first, then the token user's other accounts."""
         account_id = str(self.config["account_id"])
         yield self._fetch_configured_account(context)
 
         skipped = 0
-        for record in super().request_records(context):
+        for record in self._listing_records(context):
             if str(record.get("account_id")) == account_id:
                 skipped += 1
                 continue
