@@ -21,7 +21,11 @@ from nekt_singer_sdk import typing as th
 from nekt_singer_sdk.custom_logger import internal_logger, user_logger
 from nekt_singer_sdk.streams.core import REPLICATION_FULL_TABLE, REPLICATION_INCREMENTAL
 
-from tap_facebook.api_helper import CALL_THRESHOLD_PERCENTAGE, has_reached_api_limit
+from tap_facebook.api_helper import (
+    CALL_THRESHOLD_PERCENTAGE,
+    get_suggested_sleep_time,
+    has_reached_api_limit,
+)
 from tap_facebook.client import FacebookSDKStream
 
 # The set of fields this tap requests is an explicit allow-list, NOT "whatever
@@ -418,6 +422,25 @@ CONSECUTIVE_FAILURES_BEFORE_BISECT = 3
 # run falls back to BASIC_FIELDS rather than shrinking the schema field by field.
 MAX_AUTO_FIELD_DROPS = 3
 
+# Graph API codes that mean "you are out of quota", not "your request is wrong":
+# 4 app-level, 17 user-level, and 613 the per-ad-account custom limit the async
+# insights reports are metered against ("Custom Analytics metrics exceeded the
+# rate limit of N calls per M hours for this ad account").
+THROTTLE_ERROR_CODES = (4, 17, 613)
+
+# How many slices a single degraded report may cover. The quota is spent per
+# report CREATED, not per day of data, so one report spanning the whole pending
+# window costs one call instead of one per day. Capped so that a first backfill
+# does not turn into a single job Facebook cannot build.
+THROTTLE_SPAN_MAX_SLICES = 31
+
+# Facebook says how long until the quota frees up, but that can be hours --
+# longer than a run should sit idle, since the next scheduled run would get
+# there sooner. Wait a little (a throttle is often a burst) and then spend the
+# one call anyway.
+THROTTLE_DEFAULT_WAIT_SECONDS = 60
+THROTTLE_MAX_WAIT_SECONDS = 300
+
 # Field names are word tokens, so the rejected ones can be read straight out of
 # the API's own message. Matching whole tokens matters: a substring search for
 # `estimated_ad_recall_rate` also hits `estimated_ad_recall_rate_lower_bound`.
@@ -478,6 +501,98 @@ class AdsInsightStream(FacebookSDKStream):
         self._restart_from: pendulum.Date | None = None
         self._auto_drops = 0
         self._dates_failed = 0
+        self._throttled = False
+        self._throttle_wait = 0
+        self._span_mode = False
+        self._span_disabled = False
+        self._span_failed_from: pendulum.Date | None = None
+
+    def _note_throttled(self, fb_err: FacebookRequestError, current_date: pendulum.Date) -> None:
+        """Record that Facebook refused a report because the quota is spent.
+
+        The caller stops the batch here rather than trying the remaining dates:
+        each one is another call against a budget that is already empty, and
+        they would all be refused identically.
+        """
+        self._throttled = True
+        suggested = get_suggested_sleep_time(
+            headers=fb_err.http_headers() or {},
+            account_id=self.config["account_id"],
+        )
+        self._throttle_wait = min(
+            max(suggested, THROTTLE_DEFAULT_WAIT_SECONDS),
+            THROTTLE_MAX_WAIT_SECONDS,
+        )
+        internal_logger.warning(
+            f"[{self.name}] Report creation for {current_date.to_date_string()} was throttled "
+            f"(code {fb_err.api_error_code()}, subcode {fb_err.api_error_subcode()}): "
+            f"{fb_err.api_error_message()}. Stopping the batch; Facebook suggests waiting "
+            f"{suggested}s, this run will wait {self._throttle_wait}s.",
+            exc_info=True,
+        )
+
+    def _enter_span_mode(self) -> bool:
+        """Switch to one report for the whole pending window. True if it flipped.
+
+        Facebook meters these reports per report created, not per day of data,
+        so asking for the window in one go costs a single call while returning
+        the same daily rows (`time_increment` still slices the result set).
+        That is the only lever left once the quota is gone.
+        """
+        if self._span_mode or self._span_disabled:
+            return False
+
+        self._span_mode = True
+        user_logger.warning(
+            f"[{self.name}] Facebook is limiting how many performance reports this ad account "
+            "may request right now. Asking for the whole period in a single report instead of "
+            "one per day, which costs a single request. The data extracted is the same."
+        )
+        internal_logger.warning(
+            f"[{self.name}] Throttled on report creation; degrading to one span report of up to "
+            f"{THROTTLE_SPAN_MAX_SLICES} slice(s) for the rest of the run."
+        )
+        return True
+
+    def _warn_throttle_is_unrecoverable(self) -> None:
+        """Tell the customer the quota is gone and one request is already the floor."""
+        user_logger.warning(
+            f"[{self.name}] Facebook is still refusing performance reports for this ad account: its "
+            "request limit is spent. The extraction already asks for the whole period in a single "
+            "request, so there is nothing left to reduce on our side. Running this source less "
+            "often, or having fewer tools query the same ad account, keeps the limit from being hit."
+        )
+        internal_logger.warning(
+            f"[{self.name}] Throttled while already in span mode (or with span mode disabled); "
+            "no further degradation is available."
+        )
+
+    def _give_up_on_span(self, resume_from: pendulum.Date, report_label: str) -> None:
+        """Abandon the degraded report and go back to one report per slice.
+
+        Splitting the range is what Facebook itself recommends for a job that is
+        too heavy to build, so the span is never retried again in this run: that
+        would only ping-pong between the two shapes, spending a call each time.
+        """
+        self._span_mode = False
+        self._span_disabled = True
+        self._span_failed_from = resume_from
+        user_logger.warning(
+            f"[{self.name}] The single report covering {report_label} was too heavy for Facebook to build. "
+            "Falling back to one report per day, which may run into the account's request limit."
+        )
+        internal_logger.warning(
+            f"[{self.name}] Span report for {report_label} failed to complete; span mode disabled for "
+            f"the rest of the run, resuming per-slice from {resume_from.to_date_string()}."
+        )
+
+    def _wait_out_throttle(self) -> None:
+        """Idle for the backoff recorded when the throttle was seen, if any."""
+        if not self._throttle_wait:
+            return
+        internal_logger.info(f"[{self.name}] Waiting {self._throttle_wait}s before the span report.")
+        time.sleep(self._throttle_wait)
+        self._throttle_wait = 0
 
     def _fail_if_nothing_extracted(
         self,
@@ -597,12 +712,20 @@ class AdsInsightStream(FacebookSDKStream):
                 break
         return next_date
 
-    def _get_time_range(self, current_date: pendulum.Date) -> dict:
+    def _get_time_range(self, current_date: pendulum.Date, until: pendulum.Date | None = None) -> dict:
         """Return the time_range dict for the Facebook API request.
 
         For 'daily': since and until are the same day.
         For 'monthly': since is the first day, until is the last day of the month.
+        When `until` is given the report spans that whole range instead: the
+        result is still sliced by `time_increment`, so the rows are the same
+        ones the one-report-per-slice path would have produced.
         """
+        if until is not None:
+            return {
+                "since": current_date.to_date_string(),
+                "until": until.to_date_string(),
+            }
         if self.effective_granularity == "monthly":
             return {
                 "since": current_date.start_of("month").to_date_string(),
@@ -813,10 +936,22 @@ class AdsInsightStream(FacebookSDKStream):
         """
         batch_reports = []
         current_date = start_date
+        self._throttled = False
+
+        if self._span_mode:
+            # One report for the whole window, so the batch is a single request.
+            batch_size = 1
+            self._wait_out_throttle()
 
         for _ in range(batch_size):
             if current_date > end_date:
                 break
+
+            next_date = self._advance_date(current_date, time_increment)
+            span_until = None
+            if self._span_mode:
+                next_date = self._advance_batch(current_date, time_increment, THROTTLE_SPAN_MAX_SLICES, end_date)
+                span_until = min(next_date.subtract(days=1), end_date)
 
             params = {
                 "level": self.report_level,
@@ -830,8 +965,13 @@ class AdsInsightStream(FacebookSDKStream):
                     self.config.get("report_definition", {}).get("action_attribution_windows_view"),
                     self.config.get("report_definition", {}).get("action_attribution_windows_click"),
                 ],
-                "time_range": self._get_time_range(current_date),
+                "time_range": self._get_time_range(current_date, span_until),
             }
+            report_label = (
+                f"{current_date.to_date_string()} to {span_until.to_date_string()}"
+                if span_until is not None
+                else current_date.to_date_string()
+            )
 
             try:
                 response = self._trigger_async_insight_report_creation(
@@ -844,15 +984,17 @@ class AdsInsightStream(FacebookSDKStream):
                     batch_reports.append(
                         {
                             "report_run_id": report_run_id,
-                            "date": current_date.to_date_string(),
+                            "date": report_label,
                             "date_obj": current_date,
+                            "until_obj": span_until,
+                            "next_date": next_date,
                         }
                     )
-                    user_logger.info(f"[{self.name}] Queued report for {current_date.to_date_string()}")
+                    user_logger.info(f"[{self.name}] Queued report for {report_label}")
                 else:
-                    user_logger.warning(f"[{self.name}] Failed to queue report for {current_date.to_date_string()}")
+                    user_logger.warning(f"[{self.name}] Failed to queue report for {report_label}")
                     internal_logger.warning(
-                        f"[{self.name}] Report creation for {current_date.to_date_string()} returned "
+                        f"[{self.name}] Report creation for {report_label} returned "
                         f"HTTP {response.status()} instead of 200; no report_run_id was issued."
                     )
 
@@ -877,17 +1019,25 @@ class AdsInsightStream(FacebookSDKStream):
                     )
                     break
 
+                if fb_err.api_error_code() in THROTTLE_ERROR_CODES:
+                    # Out of quota. Every remaining date in this batch is another
+                    # call against an empty budget, and would be refused the same
+                    # way, so stop here and let the caller ask for the window in
+                    # one report instead.
+                    self._note_throttled(fb_err, current_date)
+                    break
+
                 user_logger.warning(
-                    f"[{self.name}] Error queueing report for {current_date.to_date_string()}: {fb_err.api_error_message()}"
+                    f"[{self.name}] Error queueing report for {report_label}: {fb_err.api_error_message()}"
                 )
                 internal_logger.warning(
-                    f"[{self.name}] Report creation failed for {current_date.to_date_string()} "
+                    f"[{self.name}] Report creation failed for {report_label} "
                     f"(code {fb_err.api_error_code()}, subcode {fb_err.api_error_subcode()}, "
                     f"HTTP {fb_err.http_status()}): {message}",
                     exc_info=True,
                 )
 
-            current_date = self._advance_date(current_date, time_increment)
+            current_date = next_date
 
         return batch_reports
 
@@ -897,6 +1047,7 @@ class AdsInsightStream(FacebookSDKStream):
         columns: list[str],
         time_increment: int | str,
         *,
+        until: pendulum.Date | None = None,
         quiet: bool = False,
     ) -> str | None:
         """Create a single async report job. Returns report_run_id or None on failure.
@@ -904,6 +1055,10 @@ class AdsInsightStream(FacebookSDKStream):
         `quiet` keeps the customer-facing log clean while the sync is probing
         field subsets: those jobs are diagnostics, not work the customer asked
         for, so their failures belong on the internal channel only.
+
+        `until` re-creates a report that spans a whole range rather than a single
+        slice -- without it a degraded report would silently be retried as its
+        first day only.
         """
         channel = internal_logger if quiet else user_logger
         params = {
@@ -918,8 +1073,9 @@ class AdsInsightStream(FacebookSDKStream):
                 self.config.get("report_definition", {}).get("action_attribution_windows_view"),
                 self.config.get("report_definition", {}).get("action_attribution_windows_click"),
             ],
-            "time_range": self._get_time_range(date),
+            "time_range": self._get_time_range(date, until),
         }
+        label = f"{date} to {until}" if until is not None else f"{date}"
         try:
             response = self._trigger_async_insight_report_creation(
                 params=params, account_id=self.config["account_id"]
@@ -927,9 +1083,15 @@ class AdsInsightStream(FacebookSDKStream):
             self._check_facebook_api_usage(headers=response._headers)
             if response.status() == HTTPStatus.OK:
                 return response.json()["report_run_id"]
-            channel.warning(f"[{self.name}] Failed to queue retry report for {date}")
+            channel.warning(f"[{self.name}] Failed to queue retry report for {label}")
         except FacebookRequestError as fb_err:
-            channel.warning(f"[{self.name}] Error queueing retry report for {date}: {fb_err.api_error_message()}")
+            channel.warning(f"[{self.name}] Error queueing retry report for {label}: {fb_err.api_error_message()}")
+            internal_logger.warning(
+                f"[{self.name}] Retry report creation failed for {label} "
+                f"(code {fb_err.api_error_code()}, subcode {fb_err.api_error_subcode()}, "
+                f"HTTP {fb_err.http_status()}): {fb_err.api_error_message()}",
+                exc_info=True,
+            )
         return None
 
     def _job_completes_with(
@@ -1062,6 +1224,7 @@ class AdsInsightStream(FacebookSDKStream):
             report_run_id = report_info["report_run_id"]
             report_date = report_info["date"]
             date_obj = report_info["date_obj"]
+            span_until = report_info.get("until_obj")
             job_failures = 0
 
             for attempt in range(max_retries + 1):
@@ -1070,7 +1233,7 @@ class AdsInsightStream(FacebookSDKStream):
                         f"[{self.name}] Retrying job for {report_date} (attempt {attempt}/{max_retries}), waiting 60s..."
                     )
                     time.sleep(60)
-                    report_run_id = self._create_single_report(date_obj, columns, time_increment)
+                    report_run_id = self._create_single_report(date_obj, columns, time_increment, until=span_until)
                     if not report_run_id:
                         continue
 
@@ -1079,6 +1242,13 @@ class AdsInsightStream(FacebookSDKStream):
                     report_date=report_date,
                 )
                 if not isinstance(job, AdReportRun):
+                    if span_until is not None:
+                        # A span report is only ever used to survive a throttle.
+                        # If Facebook cannot build it, splitting the range back
+                        # into one report per slice is the documented remedy --
+                        # and cheaper than retrying a job that is too heavy.
+                        self._give_up_on_span(date_obj, report_date)
+                        return
                     job_failures += 1
                     if job_failures >= CONSECUTIVE_FAILURES_BEFORE_BISECT and self._drop_columns_failing_the_job(
                         date_obj, columns, time_increment
@@ -1126,6 +1296,11 @@ class AdsInsightStream(FacebookSDKStream):
                 #   -> end of run: _fail_if_nothing_extracted is the floor that
                 #      keeps an all-failed run from overwriting the table with an
                 #      empty snapshot.
+                if span_until is not None:
+                    # Same reasoning as a span job that never builds: go back to
+                    # one report per slice rather than write the whole range off.
+                    self._give_up_on_span(date_obj, report_date)
+                    return
                 self._dates_failed += 1
                 msg = (
                     f"[{self.name}] Insights report job failed for {report_date} after {max_retries} retries. "
@@ -1336,11 +1511,23 @@ class AdsInsightStream(FacebookSDKStream):
                     continue
 
                 if not batch_reports:
+                    if self._throttled and self._enter_span_mode():
+                        # Same window, asked for as one report instead of one per
+                        # slice. Nothing was queued, so no date is requested twice.
+                        continue
+                    if self._throttled:
+                        self._warn_throttle_is_unrecoverable()
                     # Nothing queued: skip the whole span this batch just tried,
                     # not a single date -- otherwise every date is re-requested
                     # up to batch_size times before the window moves past it.
-                    report_date = self._advance_batch(report_date, time_increment, batch_size, sync_end_date)
+                    attempted = THROTTLE_SPAN_MAX_SLICES if self._span_mode else batch_size
+                    report_date = self._advance_batch(report_date, time_increment, attempted, sync_end_date)
                     continue
+
+                if self._throttled:
+                    # Part of the batch was queued before the quota ran out. Take
+                    # what it produced, then ask for the rest in one report.
+                    self._enter_span_mode()
 
                 # Process all reports in the batch
                 for record in self._process_report_batch(batch_reports, columns, time_increment):
@@ -1354,9 +1541,16 @@ class AdsInsightStream(FacebookSDKStream):
                     columns, report_date = self._resume_after_rejection(columns, report_date)
                     continue
 
+                if self._span_failed_from is not None:
+                    # The degraded report could not be built. Pick the same range
+                    # back up one slice at a time; it yielded nothing, so nothing
+                    # is emitted twice.
+                    report_date = self._span_failed_from
+                    self._span_failed_from = None
+                    continue
+
                 # Successfully processed batch, advance to next batch
-                last_date = batch_reports[-1]["date_obj"]
-                report_date = self._advance_date(last_date, time_increment)
+                report_date = batch_reports[-1]["next_date"]
                 retry_count = 0  # Reset retry count on success
 
                 # Brief pause between batches to avoid overwhelming API
